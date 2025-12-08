@@ -1,0 +1,42 @@
+# --- Python bytecode / cache ---
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# datasets
+/data
+
+# --- Virtual environments ---
+.venv/
+venv/
+env/
+
+# --- OS / editor junk ---
+.DS_Store
+Thumbs.db
+*.swp
+.vscode/
+.idea/
+
+# --- Jupyter ---
+.ipynb_checkpoints/
+
+# --- Logs ---
+*.log
+
+# --- Local environment files (secrets etc.) ---
+.env
+*.env
+
+# --- Data (generated datasets, models, etc.) ---
+data/**
+!data/.gitkeep
+!data/README.md
+
+# --- Models / checkpoints (if you add later) ---
+checkpoints/
+models/
+*.pt
+*.pth
+*.h5
