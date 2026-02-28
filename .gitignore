@@ -7,7 +7,7 @@ __pycache__/
 # datasets
 /data
 /BachelorExpose_code/results
-/Thesis_code/data/.
+/Thesis_code/data
 /Thesis_code/test_data
 
 # --- Virtual environments ---
