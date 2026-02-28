@@ -1,4 +1,5 @@
 import numpy as np
+from scipy.ndimage import binary_dilation
 
 
 def create_ellipsoid_volume(
@@ -51,6 +52,10 @@ def generate_mito_volume(
 ):
     """Create a synthetic volume resembling a mitochondrion made of cylindrical tubes.
 
+    The radius argument is cast to an integer voxel radius internally so that
+    downstream operations using it for indexing won't fail if the caller passes
+    a float.  This keeps the public API the same.
+
     The volume is a stack of circular cross sections with randomly placed
     vertical tubes.  Each tube spans the entire Z axis and has the given radius.
 
@@ -74,6 +79,9 @@ def generate_mito_volume(
     mask : ndarray
         Boolean mask indicating tube locations.
     """
+    # defensive cast: ensure integer radius
+    tube_radius = int(np.ceil(tube_radius))
+
     z_size, y_size, x_size = shape
 
     # reproducibility
@@ -98,5 +106,121 @@ def generate_mito_volume(
         # apply to all Z slices
         mask[:, slice_mask] = True
         volume[:, slice_mask] = intensity
+
+    return volume, mask
+
+
+def generate_mito_volume_polyline(
+    shape=(32, 128, 128),
+    n_branches=3,
+    step_length=1,
+    n_steps=20,
+    tube_radius=2,
+    intensity=1.0,
+    seed=None,
+):
+    """Create a synthetic volume resembling a mitochondrion using random-walk polyline centerlines.
+
+    The tube_radius parameter is cast to an integer at entry so the morphological
+    dilation and boundary clipping behave predictably.
+
+    This model generates curved, interconnected tubules by simulating random walks
+    in 3D space. Each branch starts at random locations and follows a random-walk
+    path, then the centerline is thickened via morphological dilation.
+
+    Parameters
+    ----------
+    shape : tuple
+        (Z, Y, X) dimensions of the volume.
+    n_branches : int
+        Number of independent random-walk branches to generate.  Branches may overlap.
+    step_length : float
+        Length of each step in the random walk (in voxels).
+    n_steps : int
+        Number of steps for each random walk.
+    tube_radius : float
+        Radius of each tubule after dilation (in voxels).
+    intensity : float
+        Value assigned inside the tubules.
+    seed : int or None
+        Random seed for reproducibility.
+
+    Returns
+    -------
+    volume : ndarray
+        Float32 volume with intensity inside the tubules.
+    mask : ndarray
+        Boolean mask indicating tubule locations.
+    """
+    # defensive cast: ensure integer radius for boundary checks/dilation
+    tube_radius = int(np.ceil(tube_radius))
+
+    z_size, y_size, x_size = shape
+
+    # Use new-style random generator for consistency with dataset_generator
+    rng = np.random.default_rng(seed)
+
+    # Initialize volume and mask
+    volume = np.zeros(shape, dtype=np.float32)
+    mask = np.zeros(shape, dtype=bool)
+
+    for _ in range(n_branches):
+        # Random starting position within bounds
+        start_z = rng.integers(tube_radius, z_size - tube_radius)
+        start_y = rng.integers(tube_radius, y_size - tube_radius)
+        start_x = rng.integers(tube_radius, x_size - tube_radius)
+
+        # Trace random walk
+        path = [(start_z, start_y, start_x)]
+        z, y, x = float(start_z), float(start_y), float(start_x)
+
+        for _ in range(n_steps):
+            # Random direction in 3D (uniform on unit sphere)
+            direction = rng.normal(size=3)
+            direction /= np.linalg.norm(direction)
+
+            # Move along direction
+            z += direction[0] * step_length
+            y += direction[1] * step_length
+            x += direction[2] * step_length
+
+            # Clip to boundaries
+            z = np.clip(z, tube_radius, z_size - tube_radius - 1)
+            y = np.clip(y, tube_radius, y_size - tube_radius - 1)
+            x = np.clip(x, tube_radius, x_size - tube_radius - 1)
+
+            path.append((z, y, x))
+
+        # Create a thin line mask along the path
+        line_mask = np.zeros(shape, dtype=bool)
+
+        for i in range(len(path) - 1):
+            z0, y0, x0 = path[i]
+            z1, y1, x1 = path[i + 1]
+
+            # Bresenham-like line drawing in 3D (simple version: round to nearest voxel)
+            num_intermediate = max(int(np.ceil(step_length * 2)), 2)
+            for t in np.linspace(0, 1, num_intermediate):
+                zi = int(np.round(z0 + t * (z1 - z0)))
+                yi = int(np.round(y0 + t * (y1 - y0)))
+                xi = int(np.round(x0 + t * (x1 - x0)))
+
+                # Bounds check
+                if 0 <= zi < z_size and 0 <= yi < y_size and 0 <= xi < x_size:
+                    line_mask[zi, yi, xi] = True
+
+        # Thicken the line via morphological dilation
+        # Convert to int for dilation, then back to bool
+        radius = int(np.ceil(tube_radius))
+        dilation_struct = np.zeros((2 * radius + 1, 2 * radius + 1, 2 * radius + 1),
+                                   dtype=bool)
+        z_d, y_d, x_d = np.ogrid[-radius:radius+1, -radius:radius+1, -radius:radius+1]
+        dilation_struct[z_d**2 + y_d**2 + x_d**2 <= radius**2] = True
+
+        thickened = binary_dilation(line_mask, structure=dilation_struct, iterations=1)
+
+        # Merge into volume and mask
+        mask |= thickened
+        volume[thickened] = intensity
 
     return volume, mask

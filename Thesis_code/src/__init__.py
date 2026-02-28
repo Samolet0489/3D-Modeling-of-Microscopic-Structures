@@ -11,13 +11,14 @@ The modules exposed here are:
 """
 
 # expose frequently used symbols for convenience
-from .shapes import generate_mito_volume, create_ellipsoid_volume
+from .shapes import generate_mito_volume, generate_mito_volume_polyline, create_ellipsoid_volume
 from .psf import make_gaussian_psf, gaussian_psf_kernel
 from .render import render_image, project_volume, get_middle_slice
 from .noise import add_noise, add_microscopy_noise
 
 __all__ = [
     "generate_mito_volume",
+    "generate_mito_volume_polyline",
     "create_ellipsoid_volume",
     "make_gaussian_psf",
     "gaussian_psf_kernel",
