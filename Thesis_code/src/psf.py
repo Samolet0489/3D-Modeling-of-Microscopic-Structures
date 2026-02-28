@@ -38,3 +38,24 @@ def apply_psf(volume, psf):
     """
     blurred = fftconvolve(volume, psf, mode="same")
     return blurred.astype(np.float32)
+
+
+def gaussian_psf_kernel(size=(17, 17, 9), sigma_xy=1.0, sigma_z=1.0):
+    """Convenience wrapper matching older API used by demo_pipeline.
+
+    Parameters
+    ----------
+    size : tuple
+        Kernel dimensions (Z, Y, X).
+    sigma_xy : float
+        Standard deviation in the lateral (Y/X) directions.
+    sigma_z : float
+        Standard deviation in the axial (Z) direction.
+
+    Returns
+    -------
+    psf : ndarray
+        Normalized 3D Gaussian kernel.
+    """
+    # translate arguments to make_gaussian_psf
+    return make_gaussian_psf(size=size, sigma=(sigma_z, sigma_xy, sigma_xy))

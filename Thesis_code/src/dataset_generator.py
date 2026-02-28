@@ -1,91 +1,104 @@
+"""Dataset generation utilities for Phase 1 (2.5D) of the project.
+
+Functions in this module are written to be reusable in downstream training
+scripts.  A simple command‑line interface is provided for producing a folder
+of image/mask pairs suitable for 2D segmentation.
+"""
+
+import os
+import argparse
+
 import numpy as np
-import matplotlib.pyplot as plt
+from imageio import imwrite
 
-from shapes import create_ellipsoid_volume
-from psf import make_gaussian_psf, apply_psf
-from render import project_volume, get_middle_slice
-from noise import add_microscopy_noise
-
-
-def generate_single_example():
-    # Create 3D ellipsoid volume + mask
-    volume_shape = (32, 128, 128)  # (Z, Y, X)
-    volume, mask = create_ellipsoid_volume(
-        volume_shape=volume_shape,
-        radii=(6, 22, 18),
-        intensity=1.0,
-    )
-
-    # PSF and blurring
-    psf = make_gaussian_psf(
-        size=(17, 17, 9),
-        sigma=(2.0, 1.5, 1.5),
-    )
-    blurred_volume = apply_psf(volume, psf)
-
-    # Projection to 2D (clean image)
-    clean_image = project_volume(blurred_volume, mode="max")
-
-    # Normalize clean image to [0,1] for nicer plots
-    clean_image = clean_image - clean_image.min()
-    if clean_image.max() > 0:
-        clean_image = clean_image / clean_image.max()
-
-    # Add noise
-    noisy_image = add_microscopy_noise(
-        clean_image,
-        peak_photons=5000,
-        read_sigma=0.03,
-    )
-
-    return volume, mask, psf, clean_image, noisy_image
+from .shapes import generate_mito_volume
+from .psf import gaussian_psf_kernel
+from .render import render_image
+from .noise import add_noise
 
 
-def show_quick_figure(volume, mask, psf, clean_image, noisy_image):
+def generate_single_example(
+    shape=(32, 128, 128),
+    n_tubes=5,
+    tube_radius=2,
+    psf_size=(9, 9, 9),
+    psf_sigma_xy=1.0,
+    psf_sigma_z=2.0,
+    photon_level=2000.0,
+    read_noise_sigma=0.03,
+    projection="center_slice",
+    seed=None,
+):
+    """Create one synthetic example using the mitochondria tube model.
+
+    Parameters mirror those from ``generate_and_save_dataset`` and are simply
+    exposed here for convenience when the function is used programmatically.
     """
-    Plot four panels:
-      (1) volume middle slice (mask)
-      (2) PSF middle slice
-      (3) clean projected image
-      (4) noisy image
+    volume, mask = generate_mito_volume(
+        shape=shape,
+        n_tubes=n_tubes,
+        tube_radius=tube_radius,
+        seed=seed,
+    )
+
+    psf = gaussian_psf_kernel(size=psf_size, sigma_xy=psf_sigma_xy, sigma_z=psf_sigma_z)
+    clean = render_image(volume, psf, projection=projection)
+
+    # normalize clean image to [0,1]
+    clean = clean - clean.min()
+    if clean.max() > 0:
+        clean = clean / clean.max()
+
+    noisy = add_noise(clean, photon_level=photon_level, read_noise_sigma=read_noise_sigma, seed=seed)
+    return volume, mask, psf, clean, noisy
+
+
+def generate_and_save_dataset(
+    out_dir,
+    n_samples=100,
+    shape=(32, 128, 128),
+    n_tubes=5,
+    tube_radius=2,
+    psf_size=(9, 9, 9),
+    psf_sigma_xy=1.0,
+    psf_sigma_z=2.0,
+    photon_level=2000.0,
+    read_noise_sigma=0.03,
+):
+    """Create ``n_samples`` examples and save them to ``out_dir``.
+
+    Images are stored as ``PNG`` files under ``out_dir/images`` and masks under
+    ``out_dir/masks``.  File names are ``000000.png`` style zero‑padded.
     """
-    # middle Z slice of mask
-    mask_slice = get_middle_slice(mask.astype(np.float32))
-    # middle Z slice of PSF
-    psf_slice = get_middle_slice(psf)
+    os.makedirs(os.path.join(out_dir, "images"), exist_ok=True)
+    os.makedirs(os.path.join(out_dir, "masks"), exist_ok=True)
 
-    fig, axes = plt.subplots(2, 2, figsize=(8, 8))
+    for idx in range(n_samples):
+        vol, mask, psf, clean, noisy = generate_single_example(
+            shape=shape,
+            n_tubes=n_tubes,
+            tube_radius=tube_radius,
+            psf_size=psf_size,
+            psf_sigma_xy=psf_sigma_xy,
+            psf_sigma_z=psf_sigma_z,
+            photon_level=photon_level,
+            read_noise_sigma=read_noise_sigma,
+            projection="center_slice",
+            seed=None,
+        )
 
-    ax = axes[0, 0]
-    im0 = ax.imshow(mask_slice, cmap="gray")
-    ax.set_title("Volume middle slice (mask)")
-    ax.axis("off")
-    fig.colorbar(im0, ax=ax, fraction=0.046, pad=0.04)
+        # determine 2D mask matching the (center-slice) projection used
+        z_mid = mask.shape[0] // 2
+        mask2d = mask[z_mid]
 
-    ax = axes[0, 1]
-    im1 = ax.imshow(psf_slice / psf_slice.max(), cmap="magma")
-    ax.set_title("PSF middle slice")
-    ax.axis("off")
-    fig.colorbar(im1, ax=ax, fraction=0.046, pad=0.04)
-
-    ax = axes[1, 0]
-    im2 = ax.imshow(clean_image, cmap="gray")
-    ax.set_title("Clean projected image")
-    ax.axis("off")
-    fig.colorbar(im2, ax=ax, fraction=0.046, pad=0.04)
-
-    ax = axes[1, 1]
-    im3 = ax.imshow(noisy_image, cmap="gray")
-    ax.set_title("Noisy image")
-    ax.axis("off")
-    fig.colorbar(im3, ax=ax, fraction=0.046, pad=0.04)
-
-    plt.tight_layout()
-    plt.show()
+        imwrite(os.path.join(out_dir, "images", f"{idx:06d}.png"), (noisy * 255).astype(np.uint8))
+        imwrite(os.path.join(out_dir, "masks", f"{idx:06d}.png"), (mask2d.astype(np.uint8) * 255))
 
 
 if __name__ == "__main__":
-    np.random.seed(0)  # for reproducibility while debugging
+    parser = argparse.ArgumentParser(description="Generate a synthetic microscopy dataset.")
+    parser.add_argument("out_dir", help="Output directory for images/masks")
+    parser.add_argument("--n", type=int, default=100, help="Number of samples to create")
+    args = parser.parse_args()
 
-    volume, mask, psf, clean_image, noisy_image = generate_single_example()
-    show_quick_figure(volume, mask, psf, clean_image, noisy_image)
+    generate_and_save_dataset(args.out_dir, n_samples=args.n)
