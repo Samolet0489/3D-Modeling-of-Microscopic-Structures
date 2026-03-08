@@ -9,6 +9,7 @@ __pycache__/
 /BachelorExpose_code/results
 /Thesis_code/data
 /Thesis_code/test_data
+/Thesis_code/runs
 
 # --- Virtual environments ---
 .venv/
