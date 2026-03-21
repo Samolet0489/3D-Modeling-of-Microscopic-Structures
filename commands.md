@@ -28,8 +28,7 @@ After setup, you should see `(.venv)` prefix in your PowerShell prompt.
 
 Activate the virtual environment:
 ```powershell
-cd C:\0_Programming\BachelorThesis\3D-Modeling-of-Microscopic-Structures\Thesis_code
-.venv\Scripts\Activate.ps1
+& c:\0_Programming\IIoT\Preparation\Class1\.venv\Scripts\Activate.ps1
 ```
 
 ---
