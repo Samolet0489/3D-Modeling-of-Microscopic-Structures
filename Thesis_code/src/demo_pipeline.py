@@ -31,9 +31,16 @@ def main(
     read_noise_sigma=0.03,
     projection="max",
     model="A",
-    n_branches=3,
-    step_length=1,
-    n_steps=20,
+    n_seeds=4,
+    step_length=1.5,
+    n_steps=120,
+    branch_prob=0.08,
+    branch_steps=40,
+    radius_min=1,
+    radius_max=4,
+    persistence=0.85,
+    z_scale=0.35,
+    seed_spread=20,
     seed=42,
     noise_seed=123,
 ):
@@ -45,7 +52,7 @@ def main(
         "A" for baseline cylindrical tubes, "B" for random-walk polylines.
     projection : {"center_slice", "max", "sum"}
         Projection method for 3D→2D conversion.
-    n_branches, step_length, n_steps : int/float
+    n_seeds, step_length, n_steps, branch_prob, radius_min, radius_max : various
         Parameters for Model B (polyline generator).
     """
     if model == "A":
@@ -58,10 +65,16 @@ def main(
     elif model == "B":
         vol, mask = generate_mito_volume_polyline(
             shape=shape,
-            n_branches=n_branches,
+            n_seeds=n_seeds,
             step_length=step_length,
             n_steps=n_steps,
-            tube_radius=tube_radius,
+            branch_prob=branch_prob,
+            branch_steps=branch_steps,
+            radius_min=radius_min,
+            radius_max=radius_max,
+            persistence=persistence,
+            z_scale=z_scale,
+            seed_spread=seed_spread,
             seed=seed
         )
     else:

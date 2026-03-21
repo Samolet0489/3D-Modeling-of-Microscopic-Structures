@@ -1,118 +1,126 @@
-﻿# 3D-Modeling-of-Microscopic-Structures
+# Thesis: 3D Modeling of Microscopic Structures (Synthetic Microscopy)
 
-**Bachelor thesis project:**
-*"3D Modeling of Microscopic Structures for Synthetic Data Generation Applications in AI Model Training for Microscopy Data"*
+This repository implements a **3D-first synthetic microscopy pipeline** and a **2D U-Net** training baseline.
 
-The repository contains a small Python package under `Thesis_code/src` that
-implements a phase‑1 pipeline for generating 2.5‑D synthetic microscopy data
-(from internally‑computed 3D volumes).
+**Pipeline (Phase 1):**
+1. Generate 3D structure mask + intensity volume (Model A / Model B)
+2. Simulate microscopy imaging (3D PSF blur + 2D projection)
+3. Add noise (Poisson + Gaussian)
+4. Save paired 2D images + masks as PNG
+
+**Segmentation (Phase 2):**
+- Train a 2D U-Net (PyTorch) on the generated PNG pairs
+- Evaluate Dice / IoU and save qualitative prediction snapshots
 
 ---
 
-## 📦 Project layout
+## Folder structure
+
 ```
 Thesis_code/
-└── src/               # Python package
-    ├── __init__.py
-    ├── shapes.py            # 3D volume & mask generation
-    ├── psf.py               # 3D Gaussian PSF kernel
-    ├── render.py            # Projection / slicing routines
-    ├── noise.py             # Poisson + Gaussian noise models
-    ├── dataset_generator.py # CLI for creating synthetic datasets
-    ├── demo_pipeline.py     # Single‑sample sanity demo (4‑panel figure)
-    └── check_dataset.py     # Tool to visualize image/mask pairs
+  data/
+    <dataset_name>/
+      images/        # PNG grayscale
+      masks/         # PNG binary (0/255)
+  runs/
+    <run_name>/      # checkpoints + prediction snapshots
+  src/
+    __init__.py
+    shapes.py
+    psf.py
+    render.py
+    noise.py
+    dataset_generator.py
+    check_dataset.py
+    viz_3d.py
+    dataset2d.py
+    unet2d.py
+    metrics.py
+    train_2d.py
 ```
-
-The `data/` directory (created when running the generator) holds the
-resulting PNG files.
 
 ---
 
-## ⚙️ Setup & environment
+## Setup (Windows PowerShell)
 
-Run once to initialise:
+Create and activate a virtual environment:
+
 ```powershell
-cd C:\0_Programming\BachelorThesis\3D-Modeling-of-Microscopic-Structures\Thesis_code
-python -m venv .venv                          # create venv
-.venv\Scripts\Activate.ps1                  # activate it
-pip install numpy scipy matplotlib imageio   # install requirements
+python -m venv .venv
+.\.venv\Scripts\activate
+python -m pip install -U pip
 ```
 
-Every time you start work:
+Install dependencies:
+
 ```powershell
-cd C:\0_Programming\BachelorThesis\3D-Modeling-of-Microscopic-Structures\Thesis_code
-.venv\Scripts\Activate.ps1
+python -m pip install numpy scipy matplotlib imageio
 ```
 
-> If PowerShell refuses to run `Activate.ps1`, you may need to
-> `Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser`.
+Install PyTorch (CUDA build, recommended for RTX 30xx):
 
----
-
-## ▶️ Common commands
-
-| Task | Command |
-|------|---------|
-| Run demo | `python -m src.demo_pipeline` |
-| Generate dataset | `python -m src.dataset_generator <out_dir> --n <N> [--seed <S>]` |
-| Visualise dataset | `python -m src.check_dataset --data-dir <out_dir> --n <M>` |
-| Full quick test | see below |
-
-### Example workflows
 ```powershell
-# demo + small dataset + check
-python -m src.demo_pipeline
-python -m src.dataset_generator .\data\synthetic_2d --n 50 --seed 123
-python -m src.check_dataset --data-dir .\data\synthetic_2d --n 12
-
-# create large training set
-python -m src.dataset_generator .\data\synthetic_2d --n 2000 --seed 42
+python -m pip install --upgrade --no-cache-dir torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128
 ```
 
-The dataset generator randomises parameters per-sample (tubes, PSF,
-noise levels). Providing a `--seed` makes results reproducible.
+Verify CUDA:
+
+```powershell
+python -c "import torch; print('CUDA:', torch.cuda.is_available()); print('GPU:', torch.cuda.get_device_name(0) if torch.cuda.is_available() else None)"
+```
 
 ---
 
-## ✅ Output structure
-```
-data/synthetic_2d/
-├── images/       # noisy 2D images (uint8 PNG)
-│   ├── 000000.png
-│   └── ...
-└── masks/        # corresponding 2D masks (uint8 PNG)
-    ├── 000000.png
-    └── ...
+## Phase 1: Generate and inspect synthetic data
+
+### Generate a dataset
+Example: Model B with max projection
+
+```powershell
+python -m src.dataset_generator .\data\synthetic_B --n 500 --model B --projection max --seed 1
 ```
 
-File names are zero-padded and aligned pixel-for-pixel.
+### Visual sanity check (mask overlay)
+```powershell
+python -m src.check_dataset --data-dir .\data\synthetic_B --n 12
+```
+
+### Visualize 3D mask (projections + 3D scatter)
+```powershell
+python -m src.viz_3d --model B --seed 42
+```
 
 ---
 
-## 📝 Notes for future phases
-* Phase 2 will add `dataset2d.py`, `unet2d.py`, and `train_2d.py` for
-  2D segmentation experiments (real-only, synthetic-only, hybrid).
-* Phase 3 will extend generation to full 3D volumes and implement a 3D U-Net.
+## Phase 2: Train 2D U-Net
 
-The code is intentionally simple and well-documented to make translating the
-implementation into thesis text straightforward.
-
-
-
-3d visualization:
-```bash
-python -m src.viz_3d --seed 42 --n-tubes 6 --tube-radius 3
+### Overfit sanity test (debug correctness)
+```powershell
+python -m src.train_2d --data .\data\synthetic_B --epochs 30 --batch-size 4 --limit-train 16 --device cuda --num-workers 0 --out-dir .\runs\overfit_cuda
 ```
 
-Latest commands set:
-```bash
-python -m src.dataset_generator .\data\test_A --n 20 --model A --seed 1
-python -m src.dataset_generator .\data\test_B --n 20 --model B --seed 1
-
-python -m src.check_dataset --data-dir .\data\test_A --n 12
-python -m src.check_dataset --data-dir .\data\test_B --n 12
-
-python -m src.viz_3d --model A --seed 42 --n-tubes 6 --tube-radius 3
-python -m src.viz_3d --model B --seed 42 --n-tubes 6 --tube-radius 3
+### Full training run
+```powershell
+python -m src.train_2d --data .\data\synthetic_B --epochs 20 --batch-size 8 --device cuda --num-workers 2 --out-dir .\runs\synthetic_B_run1
 ```
 
+Outputs written to the run folder:
+- `best.pt`, `last.pt` (checkpoints)
+- `preds_epoch_XXX.png` (training snapshots)
+- `preds_test.png` (test evaluation snapshot)
+
+---
+
+## Notes
+
+- **Model A** is a simple baseline morphology (easier segmentation).
+- **Model B** is intended to become more mitochondria-like (branching / network-like).
+- If you change the generator realism, generate a new dataset folder (e.g., `synthetic_B_v2`) to keep experiments comparable.
+
+---
+
+## Roadmap
+
+- Phase 2.5/3: Improve Model B realism (persistent random walk, branching networks, thickness variation)
+- Re-train and compare robustness (e.g., noise sweeps)
+- Optional: Hybrid training with real microscopy data (synthetic pretrain → real fine-tune)

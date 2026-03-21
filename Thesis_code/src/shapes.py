@@ -112,37 +112,55 @@ def generate_mito_volume(
 
 def generate_mito_volume_polyline(
     shape=(32, 128, 128),
-    n_branches=3,
+    n_seeds=4,
     step_length=1,
-    n_steps=20,
-    tube_radius=2,
+    n_steps=80,
+    branch_prob=0.08,
+    branch_steps=40,
+    radius_min=1,
+    radius_max=4,
+    persistence=0.85,
+    z_scale=0.35,
+    seed_spread=20,
     intensity=1.0,
     seed=None,
 ):
-    """Create a synthetic volume resembling a mitochondrion using random-walk polyline centerlines.
+    """Create a synthetic volume resembling a mitochondrion using persistent random-walk polylines with planar bias.
 
-    The tube_radius parameter is cast to an integer at entry so the morphological
-    dilation and boundary clipping behave predictably.
-
-    This model generates curved, interconnected tubules by simulating random walks
-    in 3D space. Each branch starts at random locations and follows a random-walk
-    path, then the centerline is thickened via morphological dilation.
+    This model generates filament-like, interconnected tubular networks via persistent random walks
+    in 3D space with occasional branching. Direction persistence and planar bias (reduced z motion)
+    create elongated, realistic mitochondrial morphology. Seed points cluster around a colony center.
+    Thickness is applied via morphological dilation per radius for smooth, continuous tubes.
 
     Parameters
     ----------
     shape : tuple
         (Z, Y, X) dimensions of the volume.
-    n_branches : int
-        Number of independent random-walk branches to generate.  Branches may overlap.
-    step_length : float
+    n_seeds : int, default 4
+        Number of initial seed points for random walks.
+    step_length : float, default 1
         Length of each step in the random walk (in voxels).
-    n_steps : int
-        Number of steps for each random walk.
-    tube_radius : float
-        Radius of each tubule after dilation (in voxels).
-    intensity : float
+    n_steps : int, default 80
+        Number of steps for each main walker.
+    branch_prob : float, default 0.08
+        Probability of spawning a new branch at each step of a main walker.
+    branch_steps : int, default 40
+        Number of steps allocated to any spawned branch walker.
+    radius_min : float, default 1
+        Minimum radius for tubules (in voxels).
+    radius_max : float, default 4
+        Maximum radius for tubules (in voxels).
+    persistence : float, default 0.85
+        Persistence of direction: dir = normalize(persistence*dir + (1-persistence)*noise).
+        Higher values = straighter, more filament-like paths.
+    z_scale : float, default 0.35
+        Scaling factor for z-component before normalization, creating planar bias.
+        Lower values = motion mostly in XY plane (default 0.35 reduces z motion ~65%).
+    seed_spread : float, default 20
+        Spread (std dev in voxels) of Gaussian cloud around colony center for initial seeds.
+    intensity : float, default 1.0
         Value assigned inside the tubules.
-    seed : int or None
+    seed : int or None, default None
         Random seed for reproducibility.
 
     Returns
@@ -152,75 +170,136 @@ def generate_mito_volume_polyline(
     mask : ndarray
         Boolean mask indicating tubule locations.
     """
-    # defensive cast: ensure integer radius for boundary checks/dilation
-    tube_radius = int(np.ceil(tube_radius))
+    # Defensive casts
+    radius_min = int(np.ceil(radius_min))
+    radius_max = int(np.ceil(radius_max))
+    persistence = np.clip(persistence, 0.0, 1.0)
 
     z_size, y_size, x_size = shape
-
-    # Use new-style random generator for consistency with dataset_generator
     rng = np.random.default_rng(seed)
 
-    # Initialize volume and mask
-    volume = np.zeros(shape, dtype=np.float32)
-    mask = np.zeros(shape, dtype=bool)
+    # Sample one colony center
+    colony_z = rng.uniform(radius_max, z_size - radius_max)
+    colony_y = rng.uniform(radius_max, y_size - radius_max)
+    colony_x = rng.uniform(radius_max, x_size - radius_max)
 
-    for _ in range(n_branches):
-        # Random starting position within bounds
-        start_z = rng.integers(tube_radius, z_size - tube_radius)
-        start_y = rng.integers(tube_radius, y_size - tube_radius)
-        start_x = rng.integers(tube_radius, x_size - tube_radius)
+    # Initialize walkers from Gaussian cloud around colony center
+    active_walkers = []
+    for _ in range(n_seeds):
+        z = colony_z + rng.normal(loc=0, scale=seed_spread)
+        y = colony_y + rng.normal(loc=0, scale=seed_spread)
+        x = colony_x + rng.normal(loc=0, scale=seed_spread)
+        z = np.clip(z, radius_max, z_size - radius_max - 1)
+        y = np.clip(y, radius_max, y_size - radius_max - 1)
+        x = np.clip(x, radius_max, x_size - radius_max - 1)
 
-        # Trace random walk
-        path = [(start_z, start_y, start_x)]
-        z, y, x = float(start_z), float(start_y), float(start_x)
+        # Initialize with random direction
+        direction = rng.normal(size=3)
+        direction /= np.linalg.norm(direction)
 
-        for _ in range(n_steps):
-            # Random direction in 3D (uniform on unit sphere)
-            direction = rng.normal(size=3)
+        active_walkers.append({
+            'pos': [z, y, x],
+            'direction': direction,
+            'steps_left': n_steps,
+            'can_spawn': True,
+            'radii': []  # Track radius assignment for each position
+        })
+
+    # Collect all points with their assigned radii
+    all_points = []  # list of (z, y, x, r)
+    point_radii = {}  # map (zi, yi, xi) -> r for persistence
+
+    while active_walkers:
+        new_walkers = []
+        active_walkers = [w for w in active_walkers if w['steps_left'] > 0]
+        if not active_walkers:
+            break
+
+        for walker in active_walkers:
+            # Persistent random walk:
+            # dir_new = normalize(persistence*dir_old + (1-persistence)*noise)
+            noise = rng.normal(size=3)
+            direction = persistence * walker['direction'] + (1 - persistence) * noise
+
+            # Apply planar bias: scale z component
+            direction[0] *= z_scale  # z-component reduced
             direction /= np.linalg.norm(direction)
+            walker['direction'] = direction
 
             # Move along direction
-            z += direction[0] * step_length
-            y += direction[1] * step_length
-            x += direction[2] * step_length
+            walker['pos'][0] += direction[0] * step_length
+            walker['pos'][1] += direction[1] * step_length
+            walker['pos'][2] += direction[2] * step_length
 
             # Clip to boundaries
-            z = np.clip(z, tube_radius, z_size - tube_radius - 1)
-            y = np.clip(y, tube_radius, y_size - tube_radius - 1)
-            x = np.clip(x, tube_radius, x_size - tube_radius - 1)
+            walker['pos'][0] = np.clip(walker['pos'][0], radius_max, z_size - radius_max - 1)
+            walker['pos'][1] = np.clip(walker['pos'][1], radius_max, y_size - radius_max - 1)
+            walker['pos'][2] = np.clip(walker['pos'][2], radius_max, x_size - radius_max - 1)
 
-            path.append((z, y, x))
+            # Assign random radius
+            r = rng.integers(radius_min, radius_max + 1)
+            all_points.append((walker['pos'][0], walker['pos'][1], walker['pos'][2], r))
 
-        # Create a thin line mask along the path
-        line_mask = np.zeros(shape, dtype=bool)
+            walker['steps_left'] -= 1
 
-        for i in range(len(path) - 1):
-            z0, y0, x0 = path[i]
-            z1, y1, x1 = path[i + 1]
+            # Spawn new branch with probability, inheriting direction with perturbation
+            if walker['can_spawn'] and rng.random() < branch_prob:
+                low = max(1, int(branch_steps * 0.75))
+                high = int(branch_steps * 1.25) + 1
 
-            # Bresenham-like line drawing in 3D (simple version: round to nearest voxel)
-            num_intermediate = max(int(np.ceil(step_length * 2)), 2)
-            for t in np.linspace(0, 1, num_intermediate):
-                zi = int(np.round(z0 + t * (z1 - z0)))
-                yi = int(np.round(y0 + t * (y1 - y0)))
-                xi = int(np.round(x0 + t * (x1 - x0)))
+                # Perturb current direction slightly
+                pert_noise = rng.normal(size=3, scale=0.15)
+                new_dir = walker['direction'] + pert_noise
+                new_dir /= np.linalg.norm(new_dir)
 
-                # Bounds check
-                if 0 <= zi < z_size and 0 <= yi < y_size and 0 <= xi < x_size:
-                    line_mask[zi, yi, xi] = True
+                new_walker = {
+                    'pos': walker['pos'].copy(),
+                    'direction': new_dir,
+                    'steps_left': rng.integers(low, high),
+                    'can_spawn': False,
+                    'radii': []
+                }
+                new_walkers.append(new_walker)
 
-        # Thicken the line via morphological dilation
-        # Convert to int for dilation, then back to bool
-        radius = int(np.ceil(tube_radius))
-        dilation_struct = np.zeros((2 * radius + 1, 2 * radius + 1, 2 * radius + 1),
-                                   dtype=bool)
-        z_d, y_d, x_d = np.ogrid[-radius:radius+1, -radius:radius+1, -radius:radius+1]
-        dilation_struct[z_d**2 + y_d**2 + x_d**2 <= radius**2] = True
+        active_walkers.extend(new_walkers)
 
-        thickened = binary_dilation(line_mask, structure=dilation_struct, iterations=1)
+    # Build centerline mask: convert all points to integer voxels
+    centerline = np.zeros(shape, dtype=bool)
+    point_to_radius = {}  # Map voxel coord to radius for later dilation
 
-        # Merge into volume and mask
-        mask |= thickened
-        volume[thickened] = intensity
+    for z, y, x, r in all_points:
+        zi, yi, xi = int(np.round(z)), int(np.round(y)), int(np.round(x))
+        if 0 <= zi < z_size and 0 <= yi < y_size and 0 <= xi < x_size:
+            centerline[zi, yi, xi] = True
+            # Store maximum radius for this voxel (in case multiple points map to same voxel)
+            key = (zi, yi, xi)
+            point_to_radius[key] = max(point_to_radius.get(key, 0), r)
+
+    # Apply tube thickening via dilation per radius
+    # For each radius, create a binary_dilation structure (ball) and dilate
+    mask = np.zeros(shape, dtype=bool)
+
+    for r in range(radius_min, radius_max + 1):
+        # Find all centerline points assigned to this radius
+        pts_r = np.zeros(shape, dtype=bool)
+        for (zi, yi, xi), assigned_r in point_to_radius.items():
+            if assigned_r == r:
+                pts_r[zi, yi, xi] = True
+
+        if not pts_r.any():
+            continue
+
+        # Create ball structure with radius r
+        ball_struct = np.zeros((2 * r + 1, 2 * r + 1, 2 * r + 1), dtype=bool)
+        zz, yy, xx = np.ogrid[-r:r+1, -r:r+1, -r:r+1]
+        ball_struct[zz**2 + yy**2 + xx**2 <= r**2] = True
+
+        # Dilate and merge
+        dilated = binary_dilation(pts_r, structure=ball_struct, iterations=1)
+        mask |= dilated
+
+    # Create volume
+    volume = np.zeros(shape, dtype=np.float32)
+    volume[mask] = intensity
 
     return volume, mask

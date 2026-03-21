@@ -21,9 +21,16 @@ def main(
     seed=42,
     max_points=20000,
     model="A",
-    n_branches=3,
-    step_length=1,
-    n_steps=20,
+    n_seeds=4,
+    step_length=1.5,
+    n_steps=120,
+    branch_prob=0.08,
+    branch_steps=40,
+    radius_min=1,
+    radius_max=4,
+    persistence=0.85,
+    z_scale=0.35,
+    seed_spread=20,
 ):
     # choose generator according to requested model
     if model == "A":
@@ -31,10 +38,16 @@ def main(
     elif model == "B":
         vol, mask = generate_mito_volume_polyline(
             shape=shape,
-            n_branches=n_branches,
+            n_seeds=n_seeds,
             step_length=step_length,
             n_steps=n_steps,
-            tube_radius=tube_radius,
+            branch_prob=branch_prob,
+            branch_steps=branch_steps,
+            radius_min=radius_min,
+            radius_max=radius_max,
+            persistence=persistence,
+            z_scale=z_scale,
+            seed_spread=seed_spread,
             seed=seed,
         )
     else:
@@ -109,12 +122,26 @@ if __name__ == "__main__":
     parser.add_argument("--n-tubes", type=int, default=5)
     parser.add_argument("--tube-radius", type=int, default=2)
     parser.add_argument("--max-points", type=int, default=20000)
-    parser.add_argument("--n-branches", type=int, default=3,
-                        help="(Model B) number of random-walk branches")
-    parser.add_argument("--step-length", type=float, default=1.0,
+    parser.add_argument("--n-seeds", type=int, default=4,
+                        help="(Model B) number of initial seed points")
+    parser.add_argument("--step-length", type=float, default=1.5,
                         help="(Model B) step length")
-    parser.add_argument("--n-steps", type=int, default=20,
-                        help="(Model B) steps per branch")
+    parser.add_argument("--n-steps", type=int, default=120,
+                        help="(Model B) steps per main walker")
+    parser.add_argument("--branch-prob", type=float, default=0.08,
+                        help="(Model B) probability of branching")
+    parser.add_argument("--branch-steps", type=int, default=40,
+                        help="(Model B) length of spawned branches")
+    parser.add_argument("--radius-min", type=int, default=1,
+                        help="(Model B) minimum radius")
+    parser.add_argument("--radius-max", type=int, default=4,
+                        help="(Model B) maximum radius")
+    parser.add_argument("--persistence", type=float, default=0.85,
+                        help="(Model B) direction persistence")
+    parser.add_argument("--z-scale", type=float, default=0.35,
+                        help="(Model B) z-plane bias")
+    parser.add_argument("--seed-spread", type=float, default=20,
+                        help="(Model B) colony seed spread")
     args = parser.parse_args()
 
     main(
@@ -123,7 +150,14 @@ if __name__ == "__main__":
         tube_radius=args.tube_radius,
         max_points=args.max_points,
         model=args.model,
-        n_branches=args.n_branches,
+        n_seeds=args.n_seeds,
         step_length=args.step_length,
         n_steps=args.n_steps,
+        branch_prob=args.branch_prob,
+        branch_steps=args.branch_steps,
+        radius_min=args.radius_min,
+        radius_max=args.radius_max,
+        persistence=args.persistence,
+        z_scale=args.z_scale,
+        seed_spread=args.seed_spread,
     )
