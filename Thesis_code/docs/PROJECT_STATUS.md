@@ -1,8 +1,15 @@
 # Thesis Project Status
 
 ## Current stage
-Phase 2 baseline is complete.
-We have a working synthetic-data pipeline and a working 2D segmentation training pipeline.
+Phase 2 baseline is complete, and Model B realism improvement is in progress.
+
+We now have:
+- a working synthetic-data generation pipeline
+- a working 2D segmentation training pipeline
+- a cleaned project structure
+- a first improved Model B candidate with border-aware generation and dataset QC
+
+---
 
 ## What is already done
 
@@ -12,7 +19,7 @@ We have a working synthetic-data pipeline and a working 2D segmentation training
 - Model B polyline / branched generator
 - PSF blur
 - 3D -> 2D rendering
-- Microscopy noise
+- microscopy noise
 - PNG dataset generation
 - dataset sanity-check visualization
 
@@ -23,71 +30,137 @@ We have a working synthetic-data pipeline and a working 2D segmentation training
 - 2D U-Net
 - Dice + IoU metrics
 - training script with:
-  - pos_weight for class imbalance
+  - positive-class weighting for class imbalance
   - overfit sanity mode
   - checkpoints
   - prediction snapshots
   - test evaluation
 
-## Latest results
-- synthetic_B:
-  - best val Dice ≈ 0.735
-  - test Dice ≈ 0.725
-  - test IoU ≈ 0.575
+---
 
-- synthetic_A:
-  - best val Dice ≈ 0.878
-  - test Dice ≈ 0.915
-  - test IoU ≈ 0.849
+## Baseline results before realism improvement
 
-## Interpretation
-- Pipeline works end-to-end.
-- Model can learn from synthetic data.
-- Model A currently outperforms Model B.
-- Main bottleneck is now synthetic realism, especially Model B morphology.
+### Synthetic_A
+- best val Dice ≈ 0.878
+- test Dice ≈ 0.915
+- test IoU ≈ 0.849
+
+### Synthetic_B (older baseline)
+- best val Dice ≈ 0.735
+- test Dice ≈ 0.725
+- test IoU ≈ 0.575
+
+### Interpretation
+- the pipeline works end-to-end
+- the model can learn from synthetic data
+- Model A currently outperforms the older Model B
+- the main bottleneck is synthetic realism, especially Model B morphology
+
+---
+
+## 2026-03-22 - Model B realism improvement progress
+
+A revised Model B with smoother tubules, border-aware walker behavior, and dataset QC was introduced.
+
+### Generator-side improvements
+- smoother segment rasterization
+- smoother radius drift along branches
+- flatter colonies around the focal plane
+- border repulsion before walkers reach image walls
+- inward turning when walkers approach boundaries
+- walker termination after repeated edge collisions
+- automatic sample QC based on foreground fraction and border dominance
+
+### Failed dense setting (`qc1`)
+An initial dense revision of Model B failed the QC gate because the center-slice masks were too full.
+
+Observed issue:
+- foreground fraction often around 0.49-0.69
+- rejection reason: `too_full`
+
+Interpretation:
+- border artifacts were reduced
+- but morphology density was too high for the selected center-slice projection setup
+
+### Selected improved Model B candidate (`qc1b`)
+A lighter parameter set produced acceptable and visually improved samples.
+
+Selected config:
+- n_seeds = 3
+- step_length = 1.4
+- n_steps = 90
+- branch_prob = 0.04
+- branch_steps = 30
+- radius_min = 1
+- radius_max = 3
+- persistence = 0.88
+- z_scale = 0.36
+- seed_spread = 20
+
+Observed QC behavior:
+- foreground fraction approximately 0.08-0.22
+- all 24/24 smoke-test samples accepted on the first attempt
+- border fraction effectively 0.00 in the smoke test
+
+### Smoke-test training result on `qc1b`
+Quick overfit-style training on the `qc1b` smoke dataset produced:
+- Best validation Dice ≈ 0.871
+- Test Dice ≈ 0.871
+- Test IoU ≈ 0.772
+
+Interpretation:
+This is currently the first good controlled “improved Model B” candidate.
+The next step is to generate a larger dataset with these fixed parameters and run a proper synthetic-only training experiment for comparison against:
+- the older Model B baseline
+- Model A baseline
+
+---
 
 ## What is next
-1. Improve Model B realism
-   - longer tubules
-   - better branching
-   - more connected network-like structures
-   - more natural thickness variation
 
-2. Generate a new Model B dataset
+### Immediate next step
+1. Generate a larger dataset using the selected improved Model B config
+2. Visually inspect the dataset
+3. Run a proper synthetic-only training experiment
+4. Compare against older Model B and Model A
 
-3. Retrain with the same Phase 2 pipeline
+### After that
+5. Decide whether another realism iteration is needed
+6. Write the realism-improvement subsection for the thesis
+7. Continue later with:
+   - real-only experiments
+   - hybrid synthetic + real experiments
+   - robustness / domain shift tests
 
-4. Compare:
-   - old Model B
-   - improved Model B
-   - Model A baseline
+---
 
-5. Write thesis subsection for:
-   - baseline established
-   - realism improvement motivation
-   - updated comparison
+## Selected current Model B config
 
-## Still not done
-- real-only experiments
-- hybrid synthetic+real experiments
-- robustness tests with added noise / domain shift
+Use this as the current improved Model B candidate:
+
+- n_seeds = 3
+- step_length = 1.4
+- n_steps = 90
+- branch_prob = 0.04
+- branch_steps = 30
+- radius_min = 1
+- radius_max = 3
+- persistence = 0.88
+- z_scale = 0.36
+- seed_spread = 20
+
+Note:
+This config should be passed via command line during dataset generation and recorded in each dataset folder’s `run_config.json`. It should not be hardcoded into the generator.
+
+---
 
 ## Useful commands
 
-### Visual test of generator
-python -m src.demo_pipeline --model B --projection max
+All commands should be run from:
 
-### 3D visualization
-python -m src.viz_3d --model B
+`C:\0_Programming\BachelorThesis\3D-Modeling-of-Microscopic-Structures\Thesis_code`
 
-### Generate dataset
-python -m src.dataset_generator data/synthetic_B_v2 --n 1000 --model B --projection center_slice --seed 42
+Activate environment first:
 
-### Check image/mask alignment
-python -m src.check_dataset --data-dir data/synthetic_B_v2 --n 6
-
-### Overfit sanity test
-python -m src.train_2d --data data/synthetic_B_v2 --limit-train 16 --epochs 50 --batch-size 4 --out-dir runs/overfit_B
-
-### Full training
-python -m src.train_2d --data data/synthetic_B_v2 --epochs 20 --batch-size 8 --amp --out-dir runs/synthetic_B_v2
+```powershell
+.\.venv\Scripts\Activate.ps1

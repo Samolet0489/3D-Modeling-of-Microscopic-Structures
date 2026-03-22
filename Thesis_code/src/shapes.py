@@ -24,22 +24,21 @@ def create_ellipsoid_volume(
     z0, y0, x0 = center
     rz, ry, rx = radii
 
-    # coordinate grids
     z = np.arange(z_size)[:, None, None]
     y = np.arange(y_size)[None, :, None]
     x = np.arange(x_size)[None, None, :]
 
-    # Ellipsoid equation <= 1 is inside
-    ellipsoid_eq = (((z - z0) / rz) ** 2 +
-                    ((y - y0) / ry) ** 2 +
-                    ((x - x0) / rx) ** 2)
+    ellipsoid_eq = (
+        ((z - z0) / rz) ** 2
+        + ((y - y0) / ry) ** 2
+        + ((x - x0) / rx) ** 2
+    )
 
     mask = ellipsoid_eq <= 1.0
 
     volume = np.zeros(volume_shape, dtype=np.float32)
     volume[mask] = intensity
 
-    # mask is boolean GT, volume is float intensity
     return volume, mask
 
 
@@ -50,64 +49,125 @@ def generate_mito_volume(
     intensity=1.0,
     seed=None,
 ):
-    """Create a synthetic volume resembling a mitochondrion made of cylindrical tubes.
-
-    The radius argument is cast to an integer voxel radius internally so that
-    downstream operations using it for indexing won't fail if the caller passes
-    a float.  This keeps the public API the same.
-
-    The volume is a stack of circular cross sections with randomly placed
-    vertical tubes.  Each tube spans the entire Z axis and has the given radius.
-
-    Parameters
-    ----------
-    shape : tuple
-        (Z, Y, X) dimensions of the volume.
-    n_tubes : int
-        Number of individual tubes to generate.  Tubes may overlap.
-    tube_radius : float
-        Radius of each tube in voxels (in the Y/X plane).
-    intensity : float
-        Value assigned inside the tubes.
-    seed : int or None
-        Random seed for reproducibility.
-
-    Returns
-    -------
-    volume : ndarray
-        Float32 volume with intensity inside the tubes.
-    mask : ndarray
-        Boolean mask indicating tube locations.
-    """
-    # defensive cast: ensure integer radius
+    """Create a synthetic volume resembling a mitochondrion made of cylindrical tubes."""
     tube_radius = int(np.ceil(tube_radius))
 
     z_size, y_size, x_size = shape
-
-    # reproducibility
     rng = np.random.RandomState(seed)
 
     volume = np.zeros(shape, dtype=np.float32)
     mask = np.zeros(shape, dtype=bool)
 
-    # prepare coordinate grids for a single slice
     y_grid = np.arange(y_size)[:, None]
     x_grid = np.arange(x_size)[None, :]
 
     for _ in range(n_tubes):
-        # choose a random center in the Y/X plane ensuring the tube fits
         cy = rng.randint(tube_radius, y_size - tube_radius)
         cx = rng.randint(tube_radius, x_size - tube_radius)
 
-        # compute circular cross-section mask
         dist = np.sqrt((y_grid - cy) ** 2 + (x_grid - cx) ** 2)
         slice_mask = dist <= tube_radius
 
-        # apply to all Z slices
         mask[:, slice_mask] = True
         volume[:, slice_mask] = intensity
 
     return volume, mask
+
+
+def _safe_unit_vector(vec):
+    vec = np.asarray(vec, dtype=np.float32)
+    norm = np.linalg.norm(vec)
+    if norm < 1e-8:
+        return np.array([0.0, 1.0, 0.0], dtype=np.float32)
+    return vec / norm
+
+
+def _safe_box(shape, margin):
+    z_size, y_size, x_size = shape
+    low = np.array([margin, margin, margin], dtype=np.float32)
+    high = np.array(
+        [
+            z_size - margin - 1,
+            y_size - margin - 1,
+            x_size - margin - 1,
+        ],
+        dtype=np.float32,
+    )
+    return low, high
+
+
+def _clip_position(pos, shape, margin):
+    low, high = _safe_box(shape, margin)
+    pos = np.asarray(pos, dtype=np.float32).copy()
+    return np.clip(pos, low, high)
+
+
+def _rasterize_segment(start, end, oversample=3.0):
+    """Return interpolated points along a line segment."""
+    start = np.asarray(start, dtype=np.float32)
+    end = np.asarray(end, dtype=np.float32)
+
+    segment = end - start
+    dist = float(np.linalg.norm(segment))
+    n_points = max(2, int(np.ceil(dist * oversample)) + 1)
+
+    ts = np.linspace(0.0, 1.0, n_points, dtype=np.float32)
+    return [start + t * segment for t in ts]
+
+
+def _make_ball_structure(radius):
+    r = int(radius)
+    zz, yy, xx = np.ogrid[-r:r + 1, -r:r + 1, -r:r + 1]
+    return (zz**2 + yy**2 + xx**2) <= r**2
+
+
+def _border_repulsion(pos, shape, margin, band):
+    """
+    Return a soft repulsion vector that pushes walkers away from borders
+    before they actually hit the boundary.
+    """
+    low, high = _safe_box(shape, margin)
+    pos = np.asarray(pos, dtype=np.float32)
+
+    rep = np.zeros(3, dtype=np.float32)
+
+    for axis in range(3):
+        low_band = low[axis] + band
+        high_band = high[axis] - band
+
+        if pos[axis] < low_band:
+            rep[axis] += (low_band - pos[axis]) / max(band, 1e-6)
+        elif pos[axis] > high_band:
+            rep[axis] -= (pos[axis] - high_band) / max(band, 1e-6)
+
+    return rep
+
+
+def _turn_inward_from_bounds(prev_pos, proposed_dir, shape, margin, colony_center):
+    """
+    If a proposed move would leave the safe interior box, reflect the
+    offending direction components and bias the walker back toward the colony.
+    """
+    low, high = _safe_box(shape, margin)
+
+    new_dir = np.asarray(proposed_dir, dtype=np.float32).copy()
+    proposed_pos = prev_pos + new_dir
+
+    hit_boundary = False
+    for axis in range(3):
+        if proposed_pos[axis] < low[axis]:
+            new_dir[axis] = abs(new_dir[axis])
+            hit_boundary = True
+        elif proposed_pos[axis] > high[axis]:
+            new_dir[axis] = -abs(new_dir[axis])
+            hit_boundary = True
+
+    if hit_boundary:
+        inward = np.asarray(colony_center, dtype=np.float32) - np.asarray(prev_pos, dtype=np.float32)
+        inward = _safe_unit_vector(inward)
+        new_dir = _safe_unit_vector(0.70 * new_dir + 0.30 * inward)
+
+    return new_dir, hit_boundary
 
 
 def generate_mito_volume_polyline(
@@ -125,180 +185,212 @@ def generate_mito_volume_polyline(
     intensity=1.0,
     seed=None,
 ):
-    """Create a synthetic volume resembling a mitochondrion using persistent random-walk polylines with planar bias.
-
-    This model generates filament-like, interconnected tubular networks via persistent random walks
-    in 3D space with occasional branching. Direction persistence and planar bias (reduced z motion)
-    create elongated, realistic mitochondrial morphology. Seed points cluster around a colony center.
-    Thickness is applied via morphological dilation per radius for smooth, continuous tubes.
-
-    Parameters
-    ----------
-    shape : tuple
-        (Z, Y, X) dimensions of the volume.
-    n_seeds : int, default 4
-        Number of initial seed points for random walks.
-    step_length : float, default 1
-        Length of each step in the random walk (in voxels).
-    n_steps : int, default 80
-        Number of steps for each main walker.
-    branch_prob : float, default 0.08
-        Probability of spawning a new branch at each step of a main walker.
-    branch_steps : int, default 40
-        Number of steps allocated to any spawned branch walker.
-    radius_min : float, default 1
-        Minimum radius for tubules (in voxels).
-    radius_max : float, default 4
-        Maximum radius for tubules (in voxels).
-    persistence : float, default 0.85
-        Persistence of direction: dir = normalize(persistence*dir + (1-persistence)*noise).
-        Higher values = straighter, more filament-like paths.
-    z_scale : float, default 0.35
-        Scaling factor for z-component before normalization, creating planar bias.
-        Lower values = motion mostly in XY plane (default 0.35 reduces z motion ~65%).
-    seed_spread : float, default 20
-        Spread (std dev in voxels) of Gaussian cloud around colony center for initial seeds.
-    intensity : float, default 1.0
-        Value assigned inside the tubules.
-    seed : int or None, default None
-        Random seed for reproducibility.
-
-    Returns
-    -------
-    volume : ndarray
-        Float32 volume with intensity inside the tubules.
-    mask : ndarray
-        Boolean mask indicating tubule locations.
     """
-    # Defensive casts
+    Create a synthetic volume using smoother persistent random-walk tubules.
+
+    Improvements in this version:
+    - continuous segment rasterization between successive walk positions
+    - smoother radius drift along branches
+    - flatter colony around the middle z plane
+    - soft border repulsion before walkers hit boundaries
+    - inward turning when a move would leave the safe interior box
+    - walker termination after repeated edge collisions to avoid wall-hugging
+    """
     radius_min = int(np.ceil(radius_min))
     radius_max = int(np.ceil(radius_max))
-    persistence = np.clip(persistence, 0.0, 1.0)
+    if radius_min > radius_max:
+        raise ValueError("radius_min must be <= radius_max")
+
+    persistence = float(np.clip(persistence, 0.0, 1.0))
 
     z_size, y_size, x_size = shape
     rng = np.random.default_rng(seed)
 
-    # Sample one colony center
-    colony_z = rng.uniform(radius_max, z_size - radius_max)
-    colony_y = rng.uniform(radius_max, y_size - radius_max)
-    colony_x = rng.uniform(radius_max, x_size - radius_max)
+    # A safer interior margin so thick structures do not immediately ride borders.
+    safe_margin = radius_max + 4
 
-    # Initialize walkers from Gaussian cloud around colony center
+    # Keep the colony near the middle focal plane in z so center-slice projection
+    # is more likely to intersect meaningful structure.
+    colony_z = float(
+        np.clip(
+            rng.normal(loc=z_size / 2.0, scale=max(2.0, z_size * 0.07)),
+            safe_margin,
+            z_size - safe_margin - 1,
+        )
+    )
+
+    # Keep the colony center away from borders, especially given seed spread.
+    xy_center_margin = safe_margin + max(8.0, seed_spread * 0.8)
+
+    colony_y = float(
+        rng.uniform(
+            xy_center_margin,
+            y_size - xy_center_margin - 1,
+        )
+    )
+    colony_x = float(
+        rng.uniform(
+            xy_center_margin,
+            x_size - xy_center_margin - 1,
+        )
+    )
+
+    colony_center = np.array([colony_z, colony_y, colony_x], dtype=np.float32)
+
+    # Narrower seed spread in z than in xy to encourage flatter colonies.
+    seed_spread_z = max(2.0, seed_spread * max(0.20, z_scale * 0.8))
+
+    # Start repelling before walkers are too close to borders.
+    turn_band = max(8.0, step_length * 5.0)
+
     active_walkers = []
     for _ in range(n_seeds):
-        z = colony_z + rng.normal(loc=0, scale=seed_spread)
-        y = colony_y + rng.normal(loc=0, scale=seed_spread)
-        x = colony_x + rng.normal(loc=0, scale=seed_spread)
-        z = np.clip(z, radius_max, z_size - radius_max - 1)
-        y = np.clip(y, radius_max, y_size - radius_max - 1)
-        x = np.clip(x, radius_max, x_size - radius_max - 1)
+        start_pos = np.array(
+            [
+                colony_z + rng.normal(0.0, seed_spread_z),
+                colony_y + rng.normal(0.0, seed_spread),
+                colony_x + rng.normal(0.0, seed_spread),
+            ],
+            dtype=np.float32,
+        )
+        start_pos = _clip_position(start_pos, shape, safe_margin)
 
-        # Initialize with random direction
-        direction = rng.normal(size=3)
-        direction /= np.linalg.norm(direction)
+        direction = _safe_unit_vector(rng.normal(size=3))
+        start_radius = float(rng.uniform(radius_min, radius_max))
 
-        active_walkers.append({
-            'pos': [z, y, x],
-            'direction': direction,
-            'steps_left': n_steps,
-            'can_spawn': True,
-            'radii': []  # Track radius assignment for each position
-        })
+        active_walkers.append(
+            {
+                "pos": start_pos,
+                "direction": direction,
+                "steps_left": int(n_steps),
+                "can_spawn": True,
+                "radius": start_radius,
+                "edge_hits": 0,
+            }
+        )
 
-    # Collect all points with their assigned radii
-    all_points = []  # list of (z, y, x, r)
-    point_radii = {}  # map (zi, yi, xi) -> r for persistence
+    point_to_radius = {}
 
     while active_walkers:
         new_walkers = []
-        active_walkers = [w for w in active_walkers if w['steps_left'] > 0]
-        if not active_walkers:
-            break
+        survivors = []
 
         for walker in active_walkers:
-            # Persistent random walk:
-            # dir_new = normalize(persistence*dir_old + (1-persistence)*noise)
+            if walker["steps_left"] <= 0:
+                continue
+
+            prev_pos = walker["pos"].copy()
+
             noise = rng.normal(size=3)
-            direction = persistence * walker['direction'] + (1 - persistence) * noise
+            repulsion = _border_repulsion(prev_pos, shape, safe_margin, turn_band)
 
-            # Apply planar bias: scale z component
-            direction[0] *= z_scale  # z-component reduced
-            direction /= np.linalg.norm(direction)
-            walker['direction'] = direction
+            # Slightly reduce z contribution so the colony stays flatter.
+            repulsion[0] *= 0.6
 
-            # Move along direction
-            walker['pos'][0] += direction[0] * step_length
-            walker['pos'][1] += direction[1] * step_length
-            walker['pos'][2] += direction[2] * step_length
+            new_direction = (
+                persistence * walker["direction"]
+                + (1.0 - persistence) * noise
+                + 0.55 * repulsion
+            )
 
-            # Clip to boundaries
-            walker['pos'][0] = np.clip(walker['pos'][0], radius_max, z_size - radius_max - 1)
-            walker['pos'][1] = np.clip(walker['pos'][1], radius_max, y_size - radius_max - 1)
-            walker['pos'][2] = np.clip(walker['pos'][2], radius_max, x_size - radius_max - 1)
+            new_direction[0] *= z_scale
+            new_direction = _safe_unit_vector(new_direction)
 
-            # Assign random radius
-            r = rng.integers(radius_min, radius_max + 1)
-            all_points.append((walker['pos'][0], walker['pos'][1], walker['pos'][2], r))
+            step_vec = new_direction * float(step_length)
+            corrected_dir, hit_boundary = _turn_inward_from_bounds(
+                prev_pos=prev_pos,
+                proposed_dir=step_vec,
+                shape=shape,
+                margin=safe_margin,
+                colony_center=colony_center,
+            )
 
-            walker['steps_left'] -= 1
+            if hit_boundary:
+                walker["edge_hits"] += 1
+            else:
+                walker["edge_hits"] = max(0, walker["edge_hits"] - 1)
 
-            # Spawn new branch with probability, inheriting direction with perturbation
-            if walker['can_spawn'] and rng.random() < branch_prob:
+            # If a walker keeps colliding with borders, stop it instead of letting it
+            # trace ugly wall-shaped frames.
+            if walker["edge_hits"] >= 3:
+                continue
+
+            new_direction = _safe_unit_vector(corrected_dir)
+            new_pos = prev_pos + new_direction * float(step_length)
+            new_pos = _clip_position(new_pos, shape, safe_margin)
+
+            # Smooth radius drift instead of random radius jumps at every step.
+            walker["radius"] = float(
+                np.clip(
+                    walker["radius"] + rng.normal(loc=0.0, scale=0.10),
+                    radius_min,
+                    radius_max,
+                )
+            )
+            radius_i = int(np.clip(np.round(walker["radius"]), radius_min, radius_max))
+
+            # Rasterize the whole segment.
+            for point in _rasterize_segment(prev_pos, new_pos, oversample=3.0):
+                zi, yi, xi = np.round(point).astype(int)
+                if 0 <= zi < z_size and 0 <= yi < y_size and 0 <= xi < x_size:
+                    key = (zi, yi, xi)
+                    point_to_radius[key] = max(point_to_radius.get(key, 0), radius_i)
+
+            walker["pos"] = new_pos
+            walker["direction"] = new_direction
+            walker["steps_left"] -= 1
+
+            if walker["steps_left"] > 0:
+                survivors.append(walker)
+
+            # Only spawn branches if the walker is not actively fighting borders.
+            if walker["can_spawn"] and walker["edge_hits"] == 0 and rng.random() < branch_prob:
                 low = max(1, int(branch_steps * 0.75))
-                high = int(branch_steps * 1.25) + 1
+                high = max(low + 1, int(branch_steps * 1.25) + 1)
 
-                # Perturb current direction slightly
-                pert_noise = rng.normal(size=3, scale=0.15)
-                new_dir = walker['direction'] + pert_noise
-                new_dir /= np.linalg.norm(new_dir)
+                branch_direction = _safe_unit_vector(
+                    walker["direction"] + rng.normal(loc=0.0, scale=0.20, size=3)
+                )
+                branch_radius = float(
+                    np.clip(
+                        walker["radius"] + rng.normal(loc=0.0, scale=0.15),
+                        radius_min,
+                        radius_max,
+                    )
+                )
 
-                new_walker = {
-                    'pos': walker['pos'].copy(),
-                    'direction': new_dir,
-                    'steps_left': rng.integers(low, high),
-                    'can_spawn': False,
-                    'radii': []
-                }
-                new_walkers.append(new_walker)
+                new_walkers.append(
+                    {
+                        "pos": walker["pos"].copy(),
+                        "direction": branch_direction,
+                        "steps_left": int(rng.integers(low, high)),
+                        "can_spawn": False,
+                        "radius": branch_radius,
+                        "edge_hits": 0,
+                    }
+                )
 
-        active_walkers.extend(new_walkers)
+        active_walkers = survivors + new_walkers
 
-    # Build centerline mask: convert all points to integer voxels
-    centerline = np.zeros(shape, dtype=bool)
-    point_to_radius = {}  # Map voxel coord to radius for later dilation
+    radius_to_points = {r: [] for r in range(radius_min, radius_max + 1)}
+    for coord, r in point_to_radius.items():
+        radius_to_points[r].append(coord)
 
-    for z, y, x, r in all_points:
-        zi, yi, xi = int(np.round(z)), int(np.round(y)), int(np.round(x))
-        if 0 <= zi < z_size and 0 <= yi < y_size and 0 <= xi < x_size:
-            centerline[zi, yi, xi] = True
-            # Store maximum radius for this voxel (in case multiple points map to same voxel)
-            key = (zi, yi, xi)
-            point_to_radius[key] = max(point_to_radius.get(key, 0), r)
-
-    # Apply tube thickening via dilation per radius
-    # For each radius, create a binary_dilation structure (ball) and dilate
     mask = np.zeros(shape, dtype=bool)
 
     for r in range(radius_min, radius_max + 1):
-        # Find all centerline points assigned to this radius
-        pts_r = np.zeros(shape, dtype=bool)
-        for (zi, yi, xi), assigned_r in point_to_radius.items():
-            if assigned_r == r:
-                pts_r[zi, yi, xi] = True
-
-        if not pts_r.any():
+        coords = radius_to_points[r]
+        if not coords:
             continue
 
-        # Create ball structure with radius r
-        ball_struct = np.zeros((2 * r + 1, 2 * r + 1, 2 * r + 1), dtype=bool)
-        zz, yy, xx = np.ogrid[-r:r+1, -r:r+1, -r:r+1]
-        ball_struct[zz**2 + yy**2 + xx**2 <= r**2] = True
+        pts_r = np.zeros(shape, dtype=bool)
+        zz, yy, xx = zip(*coords)
+        pts_r[np.array(zz), np.array(yy), np.array(xx)] = True
 
-        # Dilate and merge
+        ball_struct = _make_ball_structure(r)
         dilated = binary_dilation(pts_r, structure=ball_struct, iterations=1)
         mask |= dilated
 
-    # Create volume
     volume = np.zeros(shape, dtype=np.float32)
     volume[mask] = intensity
 
