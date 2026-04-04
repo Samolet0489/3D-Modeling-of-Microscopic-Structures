@@ -52,6 +52,27 @@ The dataset generator now rejects bad samples if they are:
 
 This helped reveal that one early revised setting was too dense.
 
+
+### 5. `noise.py` improvement
+The microscopy noise model was updated based on supervisor feedback.
+
+What changed:
+- Gaussian noise was removed from the default path
+- the noise function now uses:
+  - random offset normalization
+  - random max-signal scaling
+  - Poisson noise only by default
+- output compatibility with the rest of the pipeline was preserved by still returning normalized `float32` images in `[0, 1]`
+
+Why this matters:
+- the old idea risked over-degrading the generated images
+- the new version keeps the images noisy and more microscope-like without destroying the structural signal needed for segmentation training
+
+Validation:
+- simple smoke tests worked
+- pipeline-level preview with actual synthetic mitochondria also worked
+- the noisy images show visible acquisition-like degradation while preserving morphology
+
 ---
 
 ## Important experiment history
@@ -123,6 +144,7 @@ At the moment the story is:
 5. the larger improved Model B run (`B_v2`) achieved:
    - test Dice ≈ `0.924`
    - test IoU ≈ `0.859`
+6. the updated Poisson-only noise model now works correctly inside the pipeline and is suitable for continued dataset generation and training experiments
 
 That means the realism-improvement work is paying off.
 

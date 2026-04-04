@@ -7,7 +7,7 @@ We now have:
 - a working synthetic-data generation pipeline
 - a working 2D segmentation training pipeline
 - a cleaned project structure
-- a first improved Model B candidate with border-aware generation and dataset QC
+- a first improved Model B candidate with border-aware generation, dataset QC, and updated supervisor-aligned noise behavior
 
 ---
 
@@ -19,7 +19,7 @@ We now have:
 - Model B polyline / branched generator
 - PSF blur
 - 3D -> 2D rendering
-- microscopy noise
+- microscopy noise (currently supervisor-aligned Poisson-only default path)
 - PNG dataset generation
 - dataset sanity-check visualization
 
@@ -70,6 +70,36 @@ A revised Model B with smoother tubules, border-aware walker behavior, and datas
 - inward turning when walkers approach boundaries
 - walker termination after repeated edge collisions
 - automatic sample QC based on foreground fraction and border dominance
+
+### Noise model update
+The microscopy noise step was revised based on supervisor feedback.
+
+Previous status:
+- the earlier implementation used Poisson noise together with Gaussian noise
+
+Updated status:
+- Gaussian noise was removed from the default path
+- the current implementation now uses:
+  - random intensity offset normalization
+  - random maximum signal scaling
+  - Poisson noise only by default
+- the output is still returned as normalized `float32` in the range `[0, 1]` so the rest of the pipeline remains compatible
+
+Reason for the change:
+- Gaussian noise was considered likely to over-damage the generated training images
+- the goal was to preserve more learnable structure while still introducing microscope-like acquisition noise
+
+Validation status:
+- direct smoke tests on simple synthetic images succeeded
+- pipeline-level preview using the actual rendered mitochondrial structures also succeeded
+- the noisy image shows visible background variation and grain
+- the mitochondrial morphology remains clearly recognizable after blur + noise
+- therefore, the updated noise module is considered integrated successfully into the current synthetic-data pipeline
+
+Interpretation:
+This is currently a successful implementation result.
+The new noise model works correctly in the pipeline and produces degraded but still learnable images.
+The exact parameter calibration may still be tuned later against real microscopy statistics if needed.
 
 ### Failed dense setting (`qc1`)
 An initial dense revision of Model B failed the QC gate because the center-slice masks were too full.

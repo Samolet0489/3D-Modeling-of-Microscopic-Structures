@@ -28,7 +28,8 @@ After setup, you should see `(.venv)` prefix in your PowerShell prompt.
 
 Activate the virtual environment:
 ```powershell
-& c:\0_Programming\IIoT\Preparation\Class1\.venv\Scripts\Activate.ps1
+cd .\Thesis_code\
+.\.venv\Scripts\Activate.ps1
 ```
 
 ---
@@ -36,6 +37,8 @@ Activate the virtual environment:
 ## Run Demo  (sanity check)
 
 Shows a 4-panel figure: volume slice, mask, clean image, noisy image.
+
+Note: the current default noise behavior is supervisor-aligned Poisson noise with randomized intensity scaling. Gaussian noise is not used by default.
 
 ```powershell
 python -m src.demo_pipeline
@@ -136,7 +139,7 @@ Thesis_code/
     ├── shapes.py            # Volume & mask generation (mitochondria tube model)
     ├── psf.py               # 3D Gaussian PSF kernel
     ├── render.py            # PSF convolution & 2D projection/slicing
-    ├── noise.py             # Poisson + Gaussian noise models
+    ├── noise.py             # Supervisor-aligned microscopy noise (Poisson-only by default, Gaussian optional but off)
     ├── dataset_generator.py # Batch image/mask generation + CLI
     ├── demo_pipeline.py     # Single-sample demo (4-panel figure)
     └── check_dataset.py     # Dataset visualization tool (NEW)
