@@ -1,13 +1,18 @@
 # Thesis Project Status
 
 ## Current stage
-Phase 2 baseline is complete, and Model B realism improvement is in progress.
+Phase 2 baseline is complete.
+Model B mask and noise fine-tuning is now in the final polishing stage.
 
 We now have:
 - a working synthetic-data generation pipeline
 - a working 2D segmentation training pipeline
 - a cleaned project structure
-- a first improved Model B candidate with border-aware generation, dataset QC, and updated supervisor-aligned noise behavior
+- a retained Model A baseline generator
+- an improved Model B generator with border-aware generation and dataset QC
+- a refined mask-generation path based on visible rendered signal constrained by raw support
+- a refined microscopy-noise path with stronger background realism
+- current fine-tuned command sets for both a simple profile and a balanced final profile
 
 ---
 
@@ -15,11 +20,13 @@ We now have:
 
 ### Phase 1 / synthetic pipeline
 - 3D shape generation
-- Model A baseline generator
+- Model A baseline generator (still present and usable)
 - Model B polyline / branched generator
 - PSF blur
 - 3D -> 2D rendering
-- microscopy noise (currently supervisor-aligned Poisson-only default path)
+- focus-limited projection option
+- refined visible-mask extraction
+- microscopy noise with structured background realism
 - PNG dataset generation
 - dataset sanity-check visualization
 
@@ -38,159 +45,128 @@ We now have:
 
 ---
 
-## Baseline results before realism improvement
+## Current code interpretation
 
-### Synthetic_A
-- best val Dice ≈ 0.878
-- test Dice ≈ 0.915
-- test IoU ≈ 0.849
+### Model A
+Model A is still in the project and should be kept.
+It is not dead code.
+It remains useful for:
+- baseline comparison in the thesis
+- showing progression from simple to improved morphology
+- generating simpler controlled samples if needed
 
-### Synthetic_B (older baseline)
-- best val Dice ≈ 0.735
-- test Dice ≈ 0.725
-- test IoU ≈ 0.575
-
-### Interpretation
-- the pipeline works end-to-end
-- the model can learn from synthetic data
-- Model A currently outperforms the older Model B
-- the main bottleneck is synthetic realism, especially Model B morphology
+### Model B
+Model B remains the main active generator.
+It is currently the best candidate for the thesis experiments.
+The recent work focused on:
+- better visual mask agreement
+- better background/noise realism
+- simpler and balanced profile selection through command-line settings
 
 ---
 
-## 2026-03-22 - Model B realism improvement progress
+## Current fine-tuned profiles
 
-A revised Model B with smoother tubules, border-aware walker behavior, and dataset QC was introduced.
-
-### Generator-side improvements
-- smoother segment rasterization
-- smoother radius drift along branches
-- flatter colonies around the focal plane
-- border repulsion before walkers reach image walls
-- inward turning when walkers approach boundaries
-- walker termination after repeated edge collisions
-- automatic sample QC based on foreground fraction and border dominance
-
-### Noise model update
-The microscopy noise step was revised based on supervisor feedback.
-
-Previous status:
-- the earlier implementation used Poisson noise together with Gaussian noise
-
-Updated status:
-- Gaussian noise was removed from the default path
-- the current implementation now uses:
-  - random intensity offset normalization
-  - random maximum signal scaling
-  - Poisson noise only by default
-- the output is still returned as normalized `float32` in the range `[0, 1]` so the rest of the pipeline remains compatible
-
-Reason for the change:
-- Gaussian noise was considered likely to over-damage the generated training images
-- the goal was to preserve more learnable structure while still introducing microscope-like acquisition noise
-
-Validation status:
-- direct smoke tests on simple synthetic images succeeded
-- pipeline-level preview using the actual rendered mitochondrial structures also succeeded
-- the noisy image shows visible background variation and grain
-- the mitochondrial morphology remains clearly recognizable after blur + noise
-- therefore, the updated noise module is considered integrated successfully into the current synthetic-data pipeline
-
-Interpretation:
-This is currently a successful implementation result.
-The new noise model works correctly in the pipeline and produces degraded but still learnable images.
-The exact parameter calibration may still be tuned later against real microscopy statistics if needed.
-
-### Failed dense setting (`qc1`)
-An initial dense revision of Model B failed the QC gate because the center-slice masks were too full.
-
-Observed issue:
-- foreground fraction often around 0.49-0.69
-- rejection reason: `too_full`
-
-Interpretation:
-- border artifacts were reduced
-- but morphology density was too high for the selected center-slice projection setup
-
-### Selected improved Model B candidate (`qc1b`)
-A lighter parameter set produced acceptable and visually improved samples.
+### 1. Simple professor-like profile
+Use when you want sparser, simpler shapes closer to the style shown by the professor.
 
 Selected config:
+- model = B
+- projection = focus_max
+- slab_thickness = 5
+- mask_low_thr = 0.14
+- mask_high_thr = 0.28
+- mask_min_size = 10
+- seed_erode_iters = 1
+- mask_gamma = 1.35
+- max_hole_size = 2
+- apply_gaussian_noise = true
+- gaussian_std = 11
+- background_strength = 0.06
+- band_strength = 0.015
+- gradient_strength = 0.02
 - n_seeds = 3
 - step_length = 1.4
-- n_steps = 90
-- branch_prob = 0.04
-- branch_steps = 30
+- n_steps = 95
+- branch_prob = 0.05
+- branch_steps = 28
 - radius_min = 1
 - radius_max = 3
 - persistence = 0.88
 - z_scale = 0.36
 - seed_spread = 20
 
-Observed QC behavior:
-- foreground fraction approximately 0.08-0.22
-- all 24/24 smoke-test samples accepted on the first attempt
-- border fraction effectively 0.00 in the smoke test
+### 2. Balanced final profile
+Use as the current main thesis candidate.
 
-### Smoke-test training result on `qc1b`
-Quick overfit-style training on the `qc1b` smoke dataset produced:
-- Best validation Dice ≈ 0.871
-- Test Dice ≈ 0.871
-- Test IoU ≈ 0.772
-
-Interpretation:
-This is currently the first good controlled “improved Model B” candidate.
-The next step is to generate a larger dataset with these fixed parameters and run a proper synthetic-only training experiment for comparison against:
-- the older Model B baseline
-- Model A baseline
-
----
-
-## What is next
-
-### Immediate next step
-1. Generate a larger dataset using the selected improved Model B config
-2. Visually inspect the dataset
-3. Run a proper synthetic-only training experiment
-4. Compare against older Model B and Model A
-
-### After that
-5. Decide whether another realism iteration is needed
-6. Write the realism-improvement subsection for the thesis
-7. Continue later with:
-   - real-only experiments
-   - hybrid synthetic + real experiments
-   - robustness / domain shift tests
-
----
-
-## Selected current Model B config
-
-Use this as the current improved Model B candidate:
-
-- n_seeds = 3
-- step_length = 1.4
-- n_steps = 90
-- branch_prob = 0.04
-- branch_steps = 30
+Selected config:
+- model = B
+- projection = focus_max
+- slab_thickness = 5
+- mask_low_thr = 0.13
+- mask_high_thr = 0.27
+- mask_min_size = 10
+- seed_erode_iters = 1
+- mask_gamma = 1.35
+- max_hole_size = 3
+- apply_gaussian_noise = true
+- gaussian_std = 12
+- background_strength = 0.08
+- band_strength = 0.025
+- gradient_strength = 0.03
+- n_seeds = 4
+- step_length = 1.5
+- n_steps = 120
+- branch_prob = 0.08
+- branch_steps = 40
 - radius_min = 1
 - radius_max = 3
-- persistence = 0.88
-- z_scale = 0.36
+- persistence = 0.85
+- z_scale = 0.35
 - seed_spread = 20
-
-Note:
-This config should be passed via command line during dataset generation and recorded in each dataset folder’s `run_config.json`. It should not be hardcoded into the generator.
+- randomize_per_sample = true
 
 ---
 
-## Useful commands
+## Current interpretation of quality
 
-All commands should be run from:
+### Mask status
+The mask problem is no longer a blocking issue.
+The current refined masks are now:
+- structurally believable
+- visibly aligned with the rendered signal
+- stable on both sparse and denser samples
 
-`C:\0_Programming\BachelorThesis\3D-Modeling-of-Microscopic-Structures\Thesis_code`
+Only small imperfections remain in thicker regions.
+Those are now considered polishing issues, not pipeline failures.
 
-Activate environment first:
+### Noise status
+Noise realism was previously the weakest part.
+After the latest refinement pass, the background now looks much more microscopy-like.
+The next task is only final parameter calibration, not a redesign.
 
-```powershell
-.\.venv\Scripts\Activate.ps1
+---
+
+## Immediate next step
+1. Generate and inspect the simple professor-like dataset
+2. Generate and inspect the balanced final dataset
+3. Run smoke training on the simple dataset
+4. Lock the final parameter set
+5. Start thesis writing immediately after the final parameter lock
+
+---
+
+## What is next after final parameter lock
+- write the Methods section for synthetic data generation
+- document Model A vs Model B as baseline vs improved approach
+- document the final mask and noise refinement decisions
+- run the main training experiments
+- prepare thesis figures from the final datasets
+
+---
+
+## Notes
+- Keep Model A in the project as a baseline and thesis comparison point.
+- Do not remove it unless there is a very strong reason.
+- Do not do further large rewrites of the mask pipeline.
+- Only small parameter-level polishing should happen from here.

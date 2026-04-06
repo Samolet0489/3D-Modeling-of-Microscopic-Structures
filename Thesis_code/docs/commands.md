@@ -1,148 +1,142 @@
+# Commands to Run Thesis Code (Updated Fine-Tuned Version)
 
-# Commands to Run Bachelor Thesis Code
-
-Complete step-by-step guide for Phase 1 (2.5D pipeline).
-
-## Setup (one-time only)
-
-Open **PowerShell** and run from the project root:
+Run all commands from:
 
 ```powershell
-cd C:\0_Programming\BachelorThesis\3D-Modeling-of-Microscopic-Structures\Thesis_code
-
-# Create virtual environment
-python -m venv .venv
-
-# Activate it
-.venv\Scripts\Activate.ps1
-
-# Install dependencies
-pip install numpy scipy matplotlib imageio
+C:\0_Programming\BachelorThesis\3D-Modeling-of-Microscopic-Structures\Thesis_code
 ```
 
-After setup, you should see `(.venv)` prefix in your PowerShell prompt.
+Activate environment first:
 
----
-
-## Every Session
-
-Activate the virtual environment:
 ```powershell
-cd .\Thesis_code\
 .\.venv\Scripts\Activate.ps1
 ```
 
 ---
 
-## Run Demo  (sanity check)
+## 1. Quick sanity check of the current fine-tuned pipeline
 
-Shows a 4-panel figure: volume slice, mask, clean image, noisy image.
-
-Note: the current default noise behavior is supervisor-aligned Poisson noise with randomized intensity scaling. Gaussian noise is not used by default.
-
-```powershell
-python -m src.demo_pipeline
-```
-
-**Expected output:** matplotlib window pops up → close it to return to terminal.
-
----
-
-## Generate Dataset
-
-Create 500 synthetic image/mask pairs for training. Images and masks are saved as 8-bit PNG files (pixel-aligned).
+This shows:
+- raw mask
+- visible mask
+- clean image
+- noisy image
 
 ```powershell
-python -m src.dataset_generator .\data\synthetic_2d --n 500
-```
-
-**Output folder structure:**
-```
-data/synthetic_2d/
-├── images/
-│   ├── 000000.png
-│   ├── 000001.png
-│   └── ...
-└── masks/
-    ├── 000000.png
-    ├── 000001.png
-    └── ...
-```
-
-Each `images/XXXXXX.png` pairs with `masks/XXXXXX.png` — ready for Phase 2 (training a segmentation model).
-
----
-
-## Check Dataset
-
-Random visualization to verify generated images and masks look reasonable.
-
-```powershell
-python -m src.check_dataset
-```
-
-Shows a grid of 6 random samples with mask contours (red) overlaid on images (grayscale).
-
-**Options:**
-- `--data-dir`: path to dataset folder (default: `./data/synthetic_2d`)
-- `--n`: number of samples to display (default: 6)
-
-Example: show 12 samples from a different folder
-```powershell
-python -m src.check_dataset --data-dir .\data\my_dataset --n 12
-```
-
-**Graceful failure:** If folder or PNG files are missing, the script prints diagnostic messages and exits cleanly.
-
----
-
-## Common Workflow
-
-From the project root (`Thesis_code`), in a single session:
-
-```powershell
-# Activate venv (if not already active)
-.venv\Scripts\Activate.ps1
-
-# Check that the pipeline works
-python -m src.demo_pipeline
-
-# Generate 100 training samples (quick test)
-python -m src.dataset_generator .\data\synthetic_2d --n 100
-
-# Visualize what was generated
-python -m src.check_dataset
-
-# Generate larger dataset for actual training
-python -m src.dataset_generator .\data\synthetic_2d --n 5000
+python -m src.demo_pipeline --model B --projection focus_max --slab-thickness 5 --mask-low-thr 0.13 --mask-high-thr 0.27 --seed-erode-iters 1 --mask-gamma 1.35 --max-hole-size 3 --apply-gaussian-noise --gaussian-std 12 --background-strength 0.08 --band-strength 0.025 --gradient-strength 0.03 --seed 42
 ```
 
 ---
 
-## Troubleshooting
+## 2. Simpler professor-like profile (Option A)
 
-| Error | Fix |
-|-------|-----|
-| `cannot be loaded because running scripts is disabled` | Run: `Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser` |
-| `ModuleNotFoundError: No module named 'imageio'` | Run: `pip install imageio` |
-| `No module named 'src'` | Ensure you are IN `Thesis_code` folder. Check: `pwd` shows `.../Thesis_code` |
-| `Data directory not found` when running check_dataset | Run `python -m src.dataset_generator .\data\synthetic_2d --n 10` first |
+Use this when you want sparser, cleaner structures closer to the professor sample style.
+
+### Single demo
+
+```powershell
+python -m src.demo_pipeline --model B --projection focus_max --slab-thickness 5 --mask-low-thr 0.14 --mask-high-thr 0.28 --seed-erode-iters 1 --mask-gamma 1.35 --max-hole-size 2 --apply-gaussian-noise --gaussian-std 11 --background-strength 0.06 --band-strength 0.015 --gradient-strength 0.02 --seed 42
+```
+
+### Generate simple-profile dataset
+
+```powershell
+python -m src.dataset_generator data/datasets/20260406_modelB_simple_profile --model B --n 300 --projection focus_max --slab-thickness 5 --mask-low-thr 0.14 --mask-high-thr 0.28 --mask-min-size 10 --seed-erode-iters 1 --mask-gamma 1.35 --max-hole-size 2 --apply-gaussian-noise --gaussian-std 11 --background-strength 0.06 --band-strength 0.015 --gradient-strength 0.02 --n-seeds 3 --step-length 1.4 --n-steps 95 --branch-prob 0.05 --branch-steps 28 --radius-min 1 --radius-max 3 --persistence 0.88 --z-scale 0.36 --seed-spread 20 --seed 42
+```
 
 ---
 
-## Code Structure
+## 3. Best balanced fine-tuned profile (current main candidate)
 
-```
-Thesis_code/
-└── src/
-    ├── __init__.py          # Package initialization
-    ├── shapes.py            # Volume & mask generation (mitochondria tube model)
-    ├── psf.py               # 3D Gaussian PSF kernel
-    ├── render.py            # PSF convolution & 2D projection/slicing
-    ├── noise.py             # Supervisor-aligned microscopy noise (Poisson-only by default, Gaussian optional but off)
-    ├── dataset_generator.py # Batch image/mask generation + CLI
-    ├── demo_pipeline.py     # Single-sample demo (4-panel figure)
-    └── check_dataset.py     # Dataset visualization tool (NEW)
+Use this as the current main Model B candidate.
+
+### Single demo
+
+```powershell
+python -m src.demo_pipeline --model B --projection focus_max --slab-thickness 5 --mask-low-thr 0.13 --mask-high-thr 0.27 --seed-erode-iters 1 --mask-gamma 1.35 --max-hole-size 3 --apply-gaussian-noise --gaussian-std 12 --background-strength 0.08 --band-strength 0.025 --gradient-strength 0.03 --seed 42
 ```
 
-All scripts are runnable via `python -m src.<module_name>` from the `Thesis_code` folder.
+### Generate balanced dataset
+
+```powershell
+python -m src.dataset_generator data/datasets/20260406_modelB_balanced_final --model B --n 1000 --projection focus_max --slab-thickness 5 --mask-low-thr 0.13 --mask-high-thr 0.27 --mask-min-size 10 --seed-erode-iters 1 --mask-gamma 1.35 --max-hole-size 3 --apply-gaussian-noise --gaussian-std 12 --background-strength 0.08 --band-strength 0.025 --gradient-strength 0.03 --n-seeds 4 --step-length 1.5 --n-steps 120 --branch-prob 0.08 --branch-steps 40 --radius-min 1 --radius-max 3 --persistence 0.85 --z-scale 0.35 --seed-spread 20 --randomize-per-sample --seed 42
+```
+
+---
+
+## 4. Stronger-noise variant
+
+Use this only if you want to test a harsher background/noise setting.
+
+```powershell
+python -m src.dataset_generator data/datasets/20260406_modelB_stronger_noise --model B --n 300 --projection focus_max --slab-thickness 5 --mask-low-thr 0.13 --mask-high-thr 0.27 --mask-min-size 10 --seed-erode-iters 1 --mask-gamma 1.35 --max-hole-size 3 --apply-gaussian-noise --gaussian-std 14 --background-strength 0.10 --band-strength 0.035 --gradient-strength 0.04 --n-seeds 3 --step-length 1.4 --n-steps 95 --branch-prob 0.05 --branch-steps 28 --radius-min 1 --radius-max 3 --persistence 0.88 --z-scale 0.36 --seed-spread 20 --randomize-per-sample --seed 42
+```
+
+---
+
+## 5. Inspect generated dataset
+
+```powershell
+python -m src.check_dataset --data-dir data/datasets/20260406_modelB_balanced_final --n 6
+```
+
+Example for the simple profile:
+
+```powershell
+python -m src.check_dataset --data-dir data/datasets/20260406_modelB_simple_profile --n 6
+```
+
+---
+
+## 6. Smoke-train on a small dataset
+
+```powershell
+python -m src.train_2d --data data/datasets/20260406_modelB_simple_profile --epochs 3 --batch-size 8 --num-workers 0 --limit-train 16 --out-dir results/20260406_train_smoke --device cuda
+```
+
+---
+
+## 7. Train on the balanced final dataset
+
+```powershell
+python -m src.train_2d --data data/datasets/20260406_modelB_balanced_final --epochs 25 --batch-size 8 --num-workers 0 --out-dir results/20260406_train_modelB_balanced_final --device cuda
+```
+
+---
+
+## 8. Model A baseline command
+
+Model A is still available and should be kept as the thesis baseline.
+
+### Demo
+
+```powershell
+python -m src.demo_pipeline --model A --projection center_slice --seed 42
+```
+
+### Dataset
+
+```powershell
+python -m src.dataset_generator data/datasets/20260406_modelA_baseline --model A --n 500 --projection center_slice --seed 42
+```
+
+---
+
+## 9. Recommended working order
+
+```powershell
+# 1) simple professor-like subset
+python -m src.dataset_generator data/datasets/20260406_modelB_simple_profile --model B --n 300 --projection focus_max --slab-thickness 5 --mask-low-thr 0.14 --mask-high-thr 0.28 --mask-min-size 10 --seed-erode-iters 1 --mask-gamma 1.35 --max-hole-size 2 --apply-gaussian-noise --gaussian-std 11 --background-strength 0.06 --band-strength 0.015 --gradient-strength 0.02 --n-seeds 3 --step-length 1.4 --n-steps 95 --branch-prob 0.05 --branch-steps 28 --radius-min 1 --radius-max 3 --persistence 0.88 --z-scale 0.36 --seed-spread 20 --seed 42
+
+# 2) inspect
+python -m src.check_dataset --data-dir data/datasets/20260406_modelB_simple_profile --n 6
+
+# 3) main balanced dataset
+python -m src.dataset_generator data/datasets/20260406_modelB_balanced_final --model B --n 1000 --projection focus_max --slab-thickness 5 --mask-low-thr 0.13 --mask-high-thr 0.27 --mask-min-size 10 --seed-erode-iters 1 --mask-gamma 1.35 --max-hole-size 3 --apply-gaussian-noise --gaussian-std 12 --background-strength 0.08 --band-strength 0.025 --gradient-strength 0.03 --n-seeds 4 --step-length 1.5 --n-steps 120 --branch-prob 0.08 --branch-steps 40 --radius-min 1 --radius-max 3 --persistence 0.85 --z-scale 0.35 --seed-spread 20 --randomize-per-sample --seed 42
+
+# 4) inspect
+python -m src.check_dataset --data-dir data/datasets/20260406_modelB_balanced_final --n 6
+
+# 5) smoke train
+python -m src.train_2d --data data/datasets/20260406_modelB_simple_profile --epochs 3 --batch-size 8 --num-workers 0 --limit-train 16 --out-dir results/20260406_train_smoke --device cuda
+```
