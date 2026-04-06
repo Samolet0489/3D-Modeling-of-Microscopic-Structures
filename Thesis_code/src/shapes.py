@@ -178,7 +178,7 @@ def generate_mito_volume_polyline(
     branch_prob=0.08,
     branch_steps=40,
     radius_min=1,
-    radius_max=4,
+    radius_max=3,
     persistence=0.85,
     z_scale=0.35,
     seed_spread=20,
@@ -188,13 +188,7 @@ def generate_mito_volume_polyline(
     """
     Create a synthetic volume using smoother persistent random-walk tubules.
 
-    Improvements in this version:
-    - continuous segment rasterization between successive walk positions
-    - smoother radius drift along branches
-    - flatter colony around the middle z plane
-    - soft border repulsion before walkers hit boundaries
-    - inward turning when a move would leave the safe interior box
-    - walker termination after repeated edge collisions to avoid wall-hugging
+    This version is still the familiar baseline, but slightly thinner by default.
     """
     radius_min = int(np.ceil(radius_min))
     radius_max = int(np.ceil(radius_max))
@@ -206,11 +200,8 @@ def generate_mito_volume_polyline(
     z_size, y_size, x_size = shape
     rng = np.random.default_rng(seed)
 
-    # A safer interior margin so thick structures do not immediately ride borders.
     safe_margin = radius_max + 4
 
-    # Keep the colony near the middle focal plane in z so center-slice projection
-    # is more likely to intersect meaningful structure.
     colony_z = float(
         np.clip(
             rng.normal(loc=z_size / 2.0, scale=max(2.0, z_size * 0.07)),
@@ -219,7 +210,6 @@ def generate_mito_volume_polyline(
         )
     )
 
-    # Keep the colony center away from borders, especially given seed spread.
     xy_center_margin = safe_margin + max(8.0, seed_spread * 0.8)
 
     colony_y = float(
@@ -237,10 +227,7 @@ def generate_mito_volume_polyline(
 
     colony_center = np.array([colony_z, colony_y, colony_x], dtype=np.float32)
 
-    # Narrower seed spread in z than in xy to encourage flatter colonies.
     seed_spread_z = max(2.0, seed_spread * max(0.20, z_scale * 0.8))
-
-    # Start repelling before walkers are too close to borders.
     turn_band = max(8.0, step_length * 5.0)
 
     active_walkers = []
@@ -283,8 +270,6 @@ def generate_mito_volume_polyline(
 
             noise = rng.normal(size=3)
             repulsion = _border_repulsion(prev_pos, shape, safe_margin, turn_band)
-
-            # Slightly reduce z contribution so the colony stays flatter.
             repulsion[0] *= 0.6
 
             new_direction = (
@@ -310,8 +295,6 @@ def generate_mito_volume_polyline(
             else:
                 walker["edge_hits"] = max(0, walker["edge_hits"] - 1)
 
-            # If a walker keeps colliding with borders, stop it instead of letting it
-            # trace ugly wall-shaped frames.
             if walker["edge_hits"] >= 3:
                 continue
 
@@ -319,7 +302,6 @@ def generate_mito_volume_polyline(
             new_pos = prev_pos + new_direction * float(step_length)
             new_pos = _clip_position(new_pos, shape, safe_margin)
 
-            # Smooth radius drift instead of random radius jumps at every step.
             walker["radius"] = float(
                 np.clip(
                     walker["radius"] + rng.normal(loc=0.0, scale=0.10),
@@ -329,7 +311,6 @@ def generate_mito_volume_polyline(
             )
             radius_i = int(np.clip(np.round(walker["radius"]), radius_min, radius_max))
 
-            # Rasterize the whole segment.
             for point in _rasterize_segment(prev_pos, new_pos, oversample=3.0):
                 zi, yi, xi = np.round(point).astype(int)
                 if 0 <= zi < z_size and 0 <= yi < y_size and 0 <= xi < x_size:
@@ -343,7 +324,6 @@ def generate_mito_volume_polyline(
             if walker["steps_left"] > 0:
                 survivors.append(walker)
 
-            # Only spawn branches if the walker is not actively fighting borders.
             if walker["can_spawn"] and walker["edge_hits"] == 0 and rng.random() < branch_prob:
                 low = max(1, int(branch_steps * 0.75))
                 high = max(low + 1, int(branch_steps * 1.25) + 1)

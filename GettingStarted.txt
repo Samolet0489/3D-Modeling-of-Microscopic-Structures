@@ -1,0 +1,118 @@
+3D Modeling of Microscopic Structures for Synthetic Data Generation Applications in AI Model Training for Microscopy Data
+Working draft
+Author: Alexander Savov
+Program: Informatics, IMC Krems
+Document status: Initial thesis draft based on the exposé and current implementation
+________________________________________
+Abstract
+Microscopy-based image analysis has become an essential component of modern biomedical research. Deep learning methods, and in particular convolutional neural networks for segmentation, have shown strong performance in detecting and delineating structures in microscopy images. However, the practical use of such models is constrained by the limited availability of large, annotated datasets. Producing ground-truth labels for microscopy data is time-consuming, costly, and often dependent on expert knowledge. This creates a bottleneck for training robust artificial intelligence models that generalize well across imaging conditions.
+This thesis investigates whether synthetic microscopy data generated from three-dimensional models of microscopic structures can reduce this limitation and improve downstream AI training. The work focuses on the design and implementation of a modular synthetic-data pipeline that models microscopy-relevant structures in 3D, simulates image formation, and produces paired image–mask data for supervised learning. A mitochondria-inspired case study is used as the initial implementation target, as tubular and branched structures provide a meaningful and challenging example for segmentation tasks.
+The implemented pipeline consists of several stages. First, synthetic 3D structures are generated using parameterized geometry. Second, the generated structures are converted into voxelized volumes and rendered into 2D images using a simplified microscopy simulation that includes projection, blur, and image noise. Third, corresponding segmentation masks are exported automatically from the known synthetic geometry. Finally, a U-Net-based segmentation model is trained on the generated data to establish a baseline for evaluating whether the synthetic images and masks are suitable for supervised learning.
+The thesis contributes both an engineering pipeline and an experimental framework. On the engineering side, it provides a reproducible and extensible prototype for creating labeled microscopy-like images without manual annotation. On the experimental side, it prepares the foundation for comparing synthetic-only, real-only, and hybrid training strategies in terms of segmentation accuracy, robustness to noise, and qualitative output quality. Particular attention is given to the realism and correctness of the generated masks, since the quality of labels is a critical factor in determining whether synthetic data benefits or harms model performance.
+The current state of the project establishes a working baseline that includes 3D shape generation, point-spread-function-based image degradation, microscopy-inspired noise simulation, dataset generation, and 2D segmentation training. The remaining work focuses on refining mask fidelity, extending realism where necessary, and evaluating the impact of the generated data on model performance.
+________________________________________
+1. Introduction
+1.1 Background and motivation
+Microscopy is one of the most important tools in biological and biomedical research, because it allows researchers to observe structures and processes that cannot be seen with the naked eye. In recent years, deep learning has significantly improved the automated analysis of microscopy images, especially in tasks such as segmentation, detection, and classification. Architectures such as U-Net have demonstrated that convolutional neural networks can learn fine structural patterns and produce high-quality segmentation masks even in challenging image domains.
+Despite this progress, the success of deep learning depends heavily on the availability of large and reliable annotated datasets. In microscopy, such data are difficult to obtain. Manual annotation is expensive, slow, and often inconsistent, particularly for complex or faint structures. In many real-world cases, only small datasets are available, and these may not capture enough variation in morphology, noise, or imaging conditions. As a result, trained models may overfit to a narrow data distribution and perform poorly when applied to new samples.
+Synthetic data generation provides a promising alternative to this limitation. If realistic microscopy-like images can be generated together with correct ground-truth annotations, then deep learning models can be trained on large datasets without the need for manual labeling at every step. This idea is especially attractive for microscopy, where the physical structure of the imaged object and the image formation process can both be approximated computationally.
+The central idea of this thesis is therefore to create a pipeline that models microscopic structures in three dimensions, simulates their appearance under microscopy, and uses the resulting synthetic images to train AI models. The broader goal is not only to produce visually plausible images, but also to test whether such synthetic data improve segmentation robustness and accuracy.
+1.2 Problem statement
+The practical problem addressed in this thesis is the scarcity of annotated microscopy data for training supervised segmentation models. Even when real images are available, obtaining precise masks is often difficult and may introduce annotation errors. This problem becomes even more severe when the structures of interest are dynamic, thin, overlapping, or poorly contrasted.
+The thesis addresses this challenge by replacing or supplementing manual annotation with synthetic data generation. However, synthetic data are only useful if the generated images are sufficiently realistic and if the masks correspond correctly to the visible structures. Therefore, the work has two interconnected goals: first, to build a technically sound synthetic-data generation pipeline, and second, to evaluate whether the resulting data are effective for AI-based image analysis.
+1.3 Aim of the thesis
+The aim of this thesis is to design, implement, and evaluate a 3D synthetic-data pipeline for microscopy image analysis. The pipeline should be able to generate microscopy-like images of microscopic structures together with corresponding segmentation masks. These data should then be used to train and test an AI model for image segmentation.
+A further aim is to examine the relationship between synthetic data quality and downstream model performance. In particular, the work investigates whether training with synthetic data can improve segmentation robustness and accuracy compared with relying only on limited real-world data.
+1.4 Scope of the work
+The scope of the thesis is intentionally practical and iterative. The first implementation target is a baseline pipeline for mitochondria-like tubular structures. The generated structures are represented in 3D, converted to voxel arrays, degraded using a simplified optical model, and exported as 2D image–mask pairs. A U-Net-based segmentation model is then trained on these data as a proof of concept.
+At the present stage, the implementation focuses on a 2.5D workflow: the structures are generated in 3D, but the final training data are 2D renderings derived from that 3D representation. This allows the project to capture part of the physical realism of three-dimensional structure formation while keeping the training setup manageable. More advanced realism improvements, such as stronger optical modeling or style refinement, are treated as future extensions rather than prerequisites for the baseline.
+1.5 Structure of the thesis
+The remainder of this thesis is structured as follows. Chapter 2 presents the research questions and overall objectives. Chapter 3 reviews relevant background in synthetic microscopy data generation, microscopy-aware modeling, and AI segmentation. Chapter 4 describes the methodology and implementation of the current synthetic-data pipeline, including 3D structure generation, rendering, noise simulation, mask generation, dataset creation, and U-Net training. Chapter 5 will present the experimental setup and evaluation plan. Chapter 6 will discuss results and limitations. Chapter 7 will conclude the work and outline possible future improvements.
+________________________________________
+2. Research Questions
+This thesis is guided by the following research questions:
+RQ1
+What are the methods to design and implement a 3D synthetic-data pipeline for training AI models in microscopy?
+This question focuses on the engineering and methodological aspects of the work. It examines how to model microscopic structures in 3D, how to simulate the imaging process, and how to generate labeled training pairs that can be used for supervised learning.
+RQ2
+To what extent does 3D synthetic data improve the robustness and accuracy of AI models for microscopic image analysis?
+This question focuses on the impact of synthetic data on downstream segmentation performance. It asks whether synthetic data improve generalization, reduce overfitting, and increase robustness to noise and variation when compared with training strategies that use only limited real data.
+________________________________________
+3. Background and Related Work
+3.1 Deep learning for microscopy image analysis
+Deep learning has become a dominant approach for microscopy image analysis because it can learn hierarchical features directly from image data. Among the most influential architectures is U-Net, which combines an encoder–decoder structure with skip connections in order to preserve both global context and fine spatial details. This makes it especially well suited for biomedical segmentation tasks, where the goal is to separate foreground structures from the background with high precision.
+In microscopy, segmentation is often more difficult than in conventional computer vision because structures may be small, noisy, overlapping, or weakly contrasted. These conditions make label quality and dataset diversity especially important.
+3.2 Synthetic data in biomedical imaging
+Synthetic data generation is increasingly used when real annotated data are scarce. In microscopy, simulation-based pipelines can create image–label pairs by combining known geometry with simplified image formation models. Such pipelines are attractive because they provide complete control over labels, structure variability, and imaging conditions.
+Existing work shows that synthetic data can be valuable in at least two ways. First, they can serve as a source of pre-training or augmentation when real data are limited. Second, they can provide fully controlled test scenarios for benchmarking robustness and segmentation accuracy. The usefulness of synthetic data, however, depends strongly on realism: if the synthetic images do not resemble the target domain closely enough, the model may learn the wrong features.
+3.3 3D modeling of microscopic structures
+A key challenge in synthetic microscopy generation is choosing a suitable representation of the underlying structure. For tubular structures such as mitochondria, one practical strategy is to use centerline-based modeling with variable radius, branching, and random motion or deformation. This approach is computationally simpler than full surface modeling while still capturing important morphological features such as elongation, curvature, and local thickness variation.
+A 3D representation is particularly useful because microscopy images are projections or slices of real three-dimensional structures. Even when the final training data are 2D, beginning from 3D allows the pipeline to represent overlap, depth, and morphology more naturally than a purely 2D drawing process.
+3.4 Image formation and realism
+Synthetic geometry alone is not sufficient to create useful microscopy images. The image must also reflect the way microscopy systems degrade and transform the underlying signal. Important factors include optical blur, projection through depth, photon shot noise, and camera read noise. Although a full microscope simulation can be complex, even simplified models can improve realism substantially when tuned correctly.
+In this thesis, realism is approached incrementally. The initial implementation uses a Gaussian point-spread function approximation together with noise models and projection operations. This creates a baseline from which more advanced improvements can later be added.
+3.5 Ground-truth masks as a critical challenge
+One major benefit of synthetic data is the ability to generate labels automatically. Because the underlying structure is known, a segmentation mask can in principle be derived directly from the synthetic geometry. In practice, however, the relationship between the 3D geometry and the final visible 2D structure is not always straightforward. Projection, blur, and noise can make the rendered image differ from the raw binary geometry, which means the mask generation strategy must be designed carefully.
+For this reason, mask fidelity is one of the important refinement topics in the current project. Even when the synthetic images look acceptable, overly thick or mismatched masks can negatively affect downstream model performance.
+________________________________________
+4. Methodology and Current Implementation
+4.1 Overview of the pipeline
+The implemented pipeline follows a modular structure. Its main stages are:
+1.	3D structure generation
+2.	PSF-based rendering and projection
+3.	Noise simulation
+4.	Dataset generation and export
+5.	U-Net-based segmentation training
+This modular structure allows each stage to be improved independently while preserving the overall workflow.
+4.2 3D structure generation
+The current implementation includes two synthetic structure models. Model A is a simpler baseline that generates cylindrical tube-like structures. Model B is a more advanced polyline-based generator designed to create branched, mitochondria-like tubular networks.
+In Model B, the structure is generated through persistent random-walk behavior in 3D space. Multiple seed points are initialized within a bounded volume, and each seed evolves over a sequence of steps with controlled randomness, local direction persistence, and optional branching. Additional logic is used to keep the generated structures within safe spatial bounds and to reduce unrealistic wall-following behavior. The resulting point trajectories are rasterized into a voxel grid and expanded according to a local radius parameter to obtain a binary volumetric structure.
+This design provides an effective compromise between realism and implementation complexity. It captures elongation, curvature, local variation in thickness, and branching without requiring full mesh-based surface modeling.
+4.3 Voxel volume and mask generation
+Once the synthetic structure is generated, it is stored as a 3D binary mask and corresponding intensity volume. The binary mask defines which voxels belong to the structure, while the intensity volume is used as the pre-imaging signal for rendering.
+At the current stage of the project, the ground-truth segmentation labels used for training are produced from the synthetic geometry by projecting the known binary mask. This provides a straightforward and reproducible labeling strategy, although ongoing refinement work aims to make the final 2D masks better aligned with the visible rendered structures.
+4.4 Rendering and projection
+The rendering stage converts the 3D intensity volume into a synthetic microscopy-like image. A Gaussian point-spread function is used to blur the signal, approximating the effect of limited optical resolution. After blurring, the volume is reduced to 2D through a projection step.
+Different projection strategies have been explored in the project, including center-slice and maximum-intensity projection. Maximum projection currently serves as the practical baseline because it provides a clear visualization of thin tubular structures and supports the early stage of segmentation experiments.
+4.5 Noise simulation
+To make the synthetic images more microscopy-like, the clean rendered image is degraded using simplified noise models. The current pipeline includes Poisson-like photon noise and Gaussian read noise. These steps are intended to imitate the uncertainty and signal corruption typical of fluorescence microscopy.
+The combination of blur and noise produces images that are qualitatively closer to microscopy data than a purely binary or noise-free rendering.
+4.6 Dataset generation
+The pipeline includes a dataset-generation module that creates image–mask pairs and stores them on disk. Structure parameters and imaging parameters can either be fixed or randomized per sample. The implementation also includes quality-control checks that reject samples that are too empty, too full, or too strongly dominated by border-touching foreground.
+This stage makes it possible to generate synthetic datasets at scale and provides a reproducible basis for training experiments.
+4.7 Training pipeline
+For the downstream segmentation task, the project currently uses a 2D U-Net implementation. The training procedure is based on binary segmentation with a single output channel. Training uses binary cross-entropy with logits, and class imbalance is handled through an automatically estimated positive-class weighting term. Validation metrics include Dice coefficient and Intersection over Union.
+The training code is designed to support GPU execution and mixed precision, making it suitable for repeated experiments once the synthetic datasets have been generated.
+4.8 Current project status
+At the time of writing, the project has reached a functional baseline stage. The codebase includes working implementations for:
+•	3D synthetic structure generation
+•	PSF-based rendering
+•	microscopy-inspired noise simulation
+•	dataset generation and quality control
+•	2D U-Net training
+•	3D and 2D visualization utilities
+This baseline is sufficient to support early experiments and thesis writing. The most important technical refinement currently in progress is the improvement of mask fidelity, especially in cases where the projected binary geometry appears thicker than the visibly rendered structure.
+________________________________________
+5. Experimental Plan
+The experimental plan is organized into three levels.
+5.1 Baseline validation
+The first goal is to confirm that the pipeline works end-to-end. This includes visually checking generated samples, verifying mask export, and confirming that the segmentation model can overfit a small synthetic subset during smoke testing.
+5.2 Synthetic-data training experiments
+The second goal is to train the U-Net model on larger synthetic datasets and measure segmentation performance using Dice and IoU. These experiments establish whether the generated data are sufficiently coherent for supervised learning.
+5.3 Comparative evaluation
+The final goal is to compare real-only, synthetic-only, and hybrid training setups. In addition to standard segmentation metrics, robustness tests and qualitative comparisons will be used to evaluate how well synthetic data improve performance under varied or noisy conditions.
+________________________________________
+6. Limitations and Planned Refinements
+Although the current implementation provides a strong baseline, several limitations remain.
+First, the optical model is still simplified and does not yet capture all microscopy-specific effects. Second, the current ground-truth mask generation strategy is geometry-based and therefore may not always match the visible rendered signal perfectly. Third, the current case study is focused on one main structure family rather than a broad set of organelles.
+Planned refinements therefore include:
+•	improving mask fidelity
+•	refining projection and rendering realism
+•	extending dataset evaluation
+•	comparing training strategies on real and hybrid datasets
+•	integrating more detailed experimental analysis into the thesis
+________________________________________
+7. Conclusion of the Current Draft State
+This draft establishes the conceptual and methodological foundation of the bachelor thesis. It expands the exposé into a thesis-ready structure while remaining aligned with the actual implementation status of the project. The current pipeline already demonstrates the core feasibility of generating synthetic microscopy-like image–mask pairs from 3D modeled structures and using them in a supervised segmentation workflow.
+The next major steps are twofold: to refine the quality of the generated masks and to collect experimental results that quantify the impact of synthetic data on model robustness and accuracy. These steps will allow the thesis to move from conceptual design and baseline implementation toward full evaluation and discussion.
+

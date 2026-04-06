@@ -2,7 +2,7 @@ import numpy as np
 from .psf import apply_psf
 
 
-def project_volume(volume, mode="max", slab_thickness=7):
+def project_volume(volume, mode="max", slab_thickness=5):
     """
     Project a 3D volume (Z, Y, X) to 2D (Y, X).
 
@@ -36,7 +36,7 @@ def get_middle_slice(volume):
     return volume[z_mid, :, :]
 
 
-def render_image(volume, psf, projection="center_slice", slab_thickness=7):
+def render_image(volume, psf, projection="center_slice", slab_thickness=5):
     """Blur a 3D volume with a PSF and return a 2D image."""
     blurred = apply_psf(volume, psf)
 

@@ -11,7 +11,7 @@ import argparse
 
 import numpy as np
 from imageio import imwrite
-from scipy.ndimage import binary_propagation, label
+from scipy.ndimage import binary_propagation, binary_erosion, label
 
 from .shapes import generate_mito_volume, generate_mito_volume_polyline
 from .psf import gaussian_psf_kernel
@@ -19,7 +19,7 @@ from .render import render_image
 from .noise import add_noise
 
 
-def _mask_to_2d(mask, projection, slab_thickness=7):
+def _mask_to_2d(mask, projection, slab_thickness=5):
     if projection == "center_slice":
         z_mid = mask.shape[0] // 2
         return mask[z_mid]
@@ -100,7 +100,7 @@ def _sample_randomized_volume_params(model, rng):
         "branch_prob": float(rng.uniform(0.04, 0.12)),
         "branch_steps": int(rng.integers(25, 61)),
         "radius_min": 1,
-        "radius_max": 4,
+        "radius_max": 3,
         "persistence": float(rng.uniform(0.82, 0.95)),
         "z_scale": float(rng.uniform(0.20, 0.45)),
         "seed_spread": float(rng.uniform(10, 28)),
@@ -137,7 +137,7 @@ def _make_border_mask(shape_2d, border_width=2):
     return border
 
 
-def _remove_small_components(mask2d, min_size=12):
+def _remove_small_components(mask2d, min_size=10):
     labels, n = label(mask2d.astype(np.uint8))
     if n == 0:
         return mask2d.astype(bool)
@@ -148,24 +148,73 @@ def _remove_small_components(mask2d, min_size=12):
     return keep[labels]
 
 
-def _visible_mask_from_clean(clean, raw_mask2d, low_thr=0.12, high_thr=0.24, min_size=12):
-    """
-    Build a visible 2D mask from the clean projected image, but constrain it
-    to the raw projected geometry.
+def _fill_small_holes(mask2d, max_hole_size=3):
+    if max_hole_size <= 0:
+        return mask2d.astype(bool)
 
-    This is intentionally moderate:
-    - no aggressive erosion
-    - no aggressive morphology
-    - strong/weak thresholding only inside raw support
+    fg = mask2d.astype(bool)
+    holes = ~fg
+
+    border = np.zeros_like(fg, dtype=bool)
+    border[0, :] = True
+    border[-1, :] = True
+    border[:, 0] = True
+    border[:, -1] = True
+
+    outside = binary_propagation(border & holes, mask=holes)
+    true_holes = holes & ~outside
+
+    labels, n = label(true_holes.astype(np.uint8))
+    if n == 0:
+        return fg
+
+    counts = np.bincount(labels.ravel())
+    fill_ids = np.where((counts <= int(max_hole_size)) & (np.arange(len(counts)) > 0))[0]
+    if fill_ids.size == 0:
+        return fg
+
+    return fg | np.isin(labels, fill_ids)
+
+
+def _visible_mask_from_clean(
+    clean,
+    raw_mask2d,
+    low_thr=0.13,
+    high_thr=0.27,
+    min_size=10,
+    seed_erode_iters=1,
+    gamma=1.35,
+    max_hole_size=3,
+):
+    """
+    Build a visible 2D mask from the clean projected image, constrained to the
+    raw projected geometry.
+
+    Compared with the current baseline, this version:
+    - uses a narrower support seed (light erosion only for strong seeds)
+    - applies a mild gamma to suppress fuzzy halos
+    - optionally fills only *tiny* holes
     """
     img = clean.astype(np.float32)
     img = img - img.min()
     if img.max() > 0:
         img = img / img.max()
 
-    raw = raw_mask2d.astype(bool)
+    img = np.clip(img, 0.0, 1.0) ** float(gamma)
 
-    strong = (img >= float(high_thr)) & raw
+    raw = raw_mask2d.astype(bool)
+    seed_support = raw
+    if seed_erode_iters > 0:
+        eroded = binary_erosion(
+            raw,
+            structure=np.ones((3, 3), dtype=bool),
+            iterations=int(seed_erode_iters),
+            border_value=0,
+        )
+        if eroded.sum() > 0:
+            seed_support = eroded
+
+    strong = (img >= float(high_thr)) & seed_support
     weak = (img >= float(low_thr)) & raw
 
     if strong.sum() == 0:
@@ -174,6 +223,7 @@ def _visible_mask_from_clean(clean, raw_mask2d, low_thr=0.12, high_thr=0.24, min
         mask = binary_propagation(strong, mask=weak)
 
     mask = _remove_small_components(mask, min_size=min_size)
+    mask = _fill_small_holes(mask, max_hole_size=max_hole_size)
     return mask.astype(bool)
 
 
@@ -237,10 +287,13 @@ def generate_single_example(
     photon_level=2000.0,
     read_noise_sigma=0.03,
     projection="focus_max",
-    slab_thickness=7,
-    mask_low_thr=0.12,
-    mask_high_thr=0.24,
-    mask_min_size=12,
+    slab_thickness=5,
+    mask_low_thr=0.13,
+    mask_high_thr=0.27,
+    mask_min_size=10,
+    seed_erode_iters=1,
+    mask_gamma=1.35,
+    max_hole_size=3,
     model="A",
     n_seeds=4,
     step_length=1.0,
@@ -248,7 +301,7 @@ def generate_single_example(
     branch_prob=0.08,
     branch_steps=40,
     radius_min=1,
-    radius_max=4,
+    radius_max=3,
     persistence=0.85,
     z_scale=0.35,
     seed_spread=20,
@@ -294,6 +347,9 @@ def generate_single_example(
         low_thr=mask_low_thr,
         high_thr=mask_high_thr,
         min_size=mask_min_size,
+        seed_erode_iters=seed_erode_iters,
+        gamma=mask_gamma,
+        max_hole_size=max_hole_size,
     )
 
     noisy = add_noise(
@@ -315,10 +371,13 @@ def generate_and_save_dataset(
     photon_level=2000.0,
     read_noise_sigma=0.03,
     projection="focus_max",
-    slab_thickness=7,
-    mask_low_thr=0.12,
-    mask_high_thr=0.24,
-    mask_min_size=12,
+    slab_thickness=5,
+    mask_low_thr=0.13,
+    mask_high_thr=0.27,
+    mask_min_size=10,
+    seed_erode_iters=1,
+    mask_gamma=1.35,
+    max_hole_size=3,
     model="A",
     n_tubes=5,
     tube_radius=2,
@@ -328,7 +387,7 @@ def generate_and_save_dataset(
     branch_prob=0.08,
     branch_steps=40,
     radius_min=1,
-    radius_max=4,
+    radius_max=3,
     persistence=0.85,
     z_scale=0.35,
     seed_spread=20,
@@ -366,6 +425,9 @@ def generate_and_save_dataset(
         "mask_low_thr": float(mask_low_thr),
         "mask_high_thr": float(mask_high_thr),
         "mask_min_size": int(mask_min_size),
+        "seed_erode_iters": int(seed_erode_iters),
+        "mask_gamma": float(mask_gamma),
+        "max_hole_size": int(max_hole_size),
         "model": model,
         "randomize_per_sample": bool(randomize_per_sample),
         "seed": seed,
@@ -439,6 +501,9 @@ def generate_and_save_dataset(
                 mask_low_thr=mask_low_thr,
                 mask_high_thr=mask_high_thr,
                 mask_min_size=mask_min_size,
+                seed_erode_iters=seed_erode_iters,
+                mask_gamma=mask_gamma,
+                max_hole_size=max_hole_size,
                 model=model,
                 seed=sample_seed,
                 **volume_params,
@@ -498,6 +563,9 @@ def generate_and_save_dataset(
             "mask_low_thr": float(mask_low_thr),
             "mask_high_thr": float(mask_high_thr),
             "mask_min_size": int(mask_min_size),
+            "seed_erode_iters": int(seed_erode_iters),
+            "mask_gamma": float(mask_gamma),
+            "max_hole_size": int(max_hole_size),
             "image_file": os.path.relpath(img_path, out_dir),
             "mask_file": os.path.relpath(mask_path, out_dir),
             "volume_params": last_volume_params,
@@ -527,10 +595,13 @@ if __name__ == "__main__":
         default="focus_max",
         help="Projection method for 3D→2D conversion",
     )
-    parser.add_argument("--slab-thickness", type=int, default=7, help="Z slab thickness for focus_max projection")
-    parser.add_argument("--mask-low-thr", type=float, default=0.12, help="Low threshold for visible mask creation")
-    parser.add_argument("--mask-high-thr", type=float, default=0.24, help="High threshold for visible mask creation")
-    parser.add_argument("--mask-min-size", type=int, default=12, help="Minimum connected component size in mask")
+    parser.add_argument("--slab-thickness", type=int, default=5, help="Z slab thickness for focus_max projection")
+    parser.add_argument("--mask-low-thr", type=float, default=0.13, help="Low threshold for visible mask creation")
+    parser.add_argument("--mask-high-thr", type=float, default=0.27, help="High threshold for visible mask creation")
+    parser.add_argument("--mask-min-size", type=int, default=10, help="Minimum connected component size in mask")
+    parser.add_argument("--seed-erode-iters", type=int, default=1, help="Light erosion applied only to seed support")
+    parser.add_argument("--mask-gamma", type=float, default=1.35, help="Gamma used to suppress fuzzy halos in clean image")
+    parser.add_argument("--max-hole-size", type=int, default=3, help="Fill only holes up to this size inside masks")
     parser.add_argument("--seed", type=int, default=None, help="Random seed for reproducibility")
 
     # shared / imaging parameters
@@ -550,7 +621,7 @@ if __name__ == "__main__":
     parser.add_argument("--branch-prob", type=float, default=0.08, help="(Model B) probability of branching")
     parser.add_argument("--branch-steps", type=int, default=40, help="(Model B) length of spawned branches")
     parser.add_argument("--radius-min", type=int, default=1, help="(Model B) minimum radius")
-    parser.add_argument("--radius-max", type=int, default=4, help="(Model B) maximum radius")
+    parser.add_argument("--radius-max", type=int, default=3, help="(Model B) maximum radius")
     parser.add_argument("--persistence", type=float, default=0.85, help="(Model B) direction persistence")
     parser.add_argument("--z-scale", type=float, default=0.35, help="(Model B) z-motion scaling")
     parser.add_argument("--seed-spread", type=float, default=20.0, help="(Model B) colony center seed spread")
@@ -603,6 +674,9 @@ if __name__ == "__main__":
         mask_low_thr=args.mask_low_thr,
         mask_high_thr=args.mask_high_thr,
         mask_min_size=args.mask_min_size,
+        seed_erode_iters=args.seed_erode_iters,
+        mask_gamma=args.mask_gamma,
+        max_hole_size=args.max_hole_size,
         model=args.model,
         n_tubes=args.n_tubes,
         tube_radius=args.tube_radius,
