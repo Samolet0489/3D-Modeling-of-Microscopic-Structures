@@ -21,3 +21,9 @@ python -m src.train_2d --data data/datasets/20260322_synthetic_B_smoke --limit-t
 
 
 ```
+
+
+to generate smaller sets:
+lower n_seeds
+lower branch_prob
+maybe reduce radius_max to 3

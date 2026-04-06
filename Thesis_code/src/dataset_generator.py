@@ -11,7 +11,7 @@ import argparse
 
 import numpy as np
 from imageio import imwrite
-from scipy.ndimage import binary_propagation, binary_erosion, label
+from scipy.ndimage import binary_propagation, label
 
 from .shapes import generate_mito_volume, generate_mito_volume_polyline
 from .psf import gaussian_psf_kernel
@@ -94,34 +94,54 @@ def _sample_randomized_volume_params(model, rng):
         }
 
     return {
-        "n_seeds": int(rng.integers(2, 8)),
+        "n_seeds": int(rng.integers(2, 7)),
         "step_length": float(rng.uniform(0.8, 2.0)),
         "n_steps": int(rng.integers(80, 141)),
-        "branch_prob": float(rng.uniform(0.04, 0.12)),
+        "branch_prob": float(rng.uniform(0.03, 0.10)),
         "branch_steps": int(rng.integers(25, 61)),
         "radius_min": 1,
-        "radius_max": 3,
+        "radius_max": int(rng.integers(3, 5)),
         "persistence": float(rng.uniform(0.82, 0.95)),
         "z_scale": float(rng.uniform(0.20, 0.45)),
-        "seed_spread": float(rng.uniform(10, 28)),
+        "seed_spread": float(rng.uniform(10, 24)),
     }
 
 
-def _build_fixed_imaging_params(psf_sigma_xy, psf_sigma_z, photon_level, read_noise_sigma):
+def _build_fixed_imaging_params(
+    psf_sigma_xy,
+    psf_sigma_z,
+    photon_level,
+    read_noise_sigma,
+    apply_gaussian_noise,
+    gaussian_std,
+    background_strength,
+    band_strength,
+    gradient_strength,
+):
     return {
         "psf_sigma_xy": float(psf_sigma_xy),
         "psf_sigma_z": float(psf_sigma_z),
         "photon_level": float(photon_level),
         "read_noise_sigma": float(read_noise_sigma),
+        "apply_gaussian_noise": bool(apply_gaussian_noise),
+        "gaussian_std": float(gaussian_std),
+        "background_strength": float(background_strength),
+        "band_strength": float(band_strength),
+        "gradient_strength": float(gradient_strength),
     }
 
 
 def _sample_randomized_imaging_params(rng):
     return {
-        "psf_sigma_xy": float(rng.uniform(0.7, 2.0)),
-        "psf_sigma_z": float(rng.uniform(1.0, 3.5)),
+        "psf_sigma_xy": float(rng.uniform(0.8, 1.8)),
+        "psf_sigma_z": float(rng.uniform(1.2, 3.2)),
         "photon_level": float(rng.uniform(2000.0, 5000.0)),
-        "read_noise_sigma": float(rng.uniform(0.01, 0.08)),
+        "read_noise_sigma": float(rng.uniform(0.02, 0.07)),
+        "apply_gaussian_noise": True,
+        "gaussian_std": float(rng.uniform(10.0, 18.0)),
+        "background_strength": float(rng.uniform(0.06, 0.12)),
+        "band_strength": float(rng.uniform(0.015, 0.045)),
+        "gradient_strength": float(rng.uniform(0.01, 0.05)),
     }
 
 
@@ -148,32 +168,38 @@ def _remove_small_components(mask2d, min_size=10):
     return keep[labels]
 
 
-def _fill_small_holes(mask2d, max_hole_size=3):
-    if max_hole_size <= 0:
+def _fill_small_holes(mask2d, max_hole_size=0):
+    """
+    Fill only very small holes inside the mask.
+
+    This is inspired by the professor's limited hole-filling idea, but kept very
+    conservative so it does not blob out the mask.
+    """
+    if max_hole_size is None or int(max_hole_size) <= 0:
         return mask2d.astype(bool)
 
-    fg = mask2d.astype(bool)
-    holes = ~fg
-
-    border = np.zeros_like(fg, dtype=bool)
-    border[0, :] = True
-    border[-1, :] = True
-    border[:, 0] = True
-    border[:, -1] = True
-
-    outside = binary_propagation(border & holes, mask=holes)
-    true_holes = holes & ~outside
-
-    labels, n = label(true_holes.astype(np.uint8))
+    mask = mask2d.astype(bool)
+    inv = ~mask
+    labels, n = label(inv.astype(np.uint8))
     if n == 0:
-        return fg
+        return mask
 
     counts = np.bincount(labels.ravel())
-    fill_ids = np.where((counts <= int(max_hole_size)) & (np.arange(len(counts)) > 0))[0]
-    if fill_ids.size == 0:
-        return fg
+    filled = mask.copy()
 
-    return fg | np.isin(labels, fill_ids)
+    h, w = mask.shape
+    border_labels = set(np.unique(labels[0, :]))
+    border_labels.update(np.unique(labels[-1, :]))
+    border_labels.update(np.unique(labels[:, 0]))
+    border_labels.update(np.unique(labels[:, -1]))
+
+    for lab in range(1, n + 1):
+        if lab in border_labels:
+            continue
+        if counts[lab] <= int(max_hole_size):
+            filled[labels == lab] = True
+
+    return filled
 
 
 def _visible_mask_from_clean(
@@ -183,38 +209,52 @@ def _visible_mask_from_clean(
     high_thr=0.27,
     min_size=10,
     seed_erode_iters=1,
-    gamma=1.35,
+    mask_gamma=1.35,
     max_hole_size=3,
 ):
     """
-    Build a visible 2D mask from the clean projected image, constrained to the
+    Build a visible 2D mask from the clean projected image, constrained by the
     raw projected geometry.
 
-    Compared with the current baseline, this version:
-    - uses a narrower support seed (light erosion only for strong seeds)
-    - applies a mild gamma to suppress fuzzy halos
-    - optionally fills only *tiny* holes
+    Compared with the baseline, this version:
+    - slightly compresses faint halos using gamma > 1
+    - uses a lightly eroded raw support for strong seeds
+    - keeps weak support inside the raw mask only
+    - optionally fills only tiny holes
     """
     img = clean.astype(np.float32)
     img = img - img.min()
     if img.max() > 0:
         img = img / img.max()
 
-    img = np.clip(img, 0.0, 1.0) ** float(gamma)
+    img = np.power(img, float(mask_gamma))
 
     raw = raw_mask2d.astype(bool)
-    seed_support = raw
-    if seed_erode_iters > 0:
-        eroded = binary_erosion(
-            raw,
-            structure=np.ones((3, 3), dtype=bool),
-            iterations=int(seed_erode_iters),
-            border_value=0,
-        )
-        if eroded.sum() > 0:
-            seed_support = eroded
 
-    strong = (img >= float(high_thr)) & seed_support
+    if seed_erode_iters > 0:
+        strong_support = raw.copy()
+        for _ in range(int(seed_erode_iters)):
+            if strong_support.sum() == 0:
+                break
+            eroded = np.zeros_like(strong_support)
+            eroded[1:-1, 1:-1] = (
+                strong_support[:-2, :-2]
+                & strong_support[:-2, 1:-1]
+                & strong_support[:-2, 2:]
+                & strong_support[1:-1, :-2]
+                & strong_support[1:-1, 1:-1]
+                & strong_support[1:-1, 2:]
+                & strong_support[2:, :-2]
+                & strong_support[2:, 1:-1]
+                & strong_support[2:, 2:]
+            )
+            if eroded.sum() == 0:
+                break
+            strong_support = eroded
+    else:
+        strong_support = raw
+
+    strong = (img >= float(high_thr)) & strong_support
     weak = (img >= float(low_thr)) & raw
 
     if strong.sum() == 0:
@@ -222,8 +262,8 @@ def _visible_mask_from_clean(
     else:
         mask = binary_propagation(strong, mask=weak)
 
-    mask = _remove_small_components(mask, min_size=min_size)
     mask = _fill_small_holes(mask, max_hole_size=max_hole_size)
+    mask = _remove_small_components(mask, min_size=min_size)
     return mask.astype(bool)
 
 
@@ -286,6 +326,11 @@ def generate_single_example(
     psf_sigma_z=2.0,
     photon_level=2000.0,
     read_noise_sigma=0.03,
+    apply_gaussian_noise=True,
+    gaussian_std=12.0,
+    background_strength=0.08,
+    band_strength=0.025,
+    gradient_strength=0.03,
     projection="focus_max",
     slab_thickness=5,
     mask_low_thr=0.13,
@@ -348,7 +393,7 @@ def generate_single_example(
         high_thr=mask_high_thr,
         min_size=mask_min_size,
         seed_erode_iters=seed_erode_iters,
-        gamma=mask_gamma,
+        mask_gamma=mask_gamma,
         max_hole_size=max_hole_size,
     )
 
@@ -357,6 +402,11 @@ def generate_single_example(
         photon_level=photon_level,
         read_noise_sigma=read_noise_sigma,
         seed=seed,
+        apply_gaussian=apply_gaussian_noise,
+        std=gaussian_std,
+        background_strength=background_strength,
+        band_strength=band_strength,
+        gradient_strength=gradient_strength,
     )
     return volume, mask, psf, clean, noisy, mask2d
 
@@ -370,6 +420,11 @@ def generate_and_save_dataset(
     psf_sigma_z=2.0,
     photon_level=2000.0,
     read_noise_sigma=0.03,
+    apply_gaussian_noise=True,
+    gaussian_std=12.0,
+    background_strength=0.08,
+    band_strength=0.025,
+    gradient_strength=0.03,
     projection="focus_max",
     slab_thickness=5,
     mask_low_thr=0.13,
@@ -451,6 +506,11 @@ def generate_and_save_dataset(
             psf_sigma_z=psf_sigma_z,
             photon_level=photon_level,
             read_noise_sigma=read_noise_sigma,
+            apply_gaussian_noise=apply_gaussian_noise,
+            gaussian_std=gaussian_std,
+            background_strength=background_strength,
+            band_strength=band_strength,
+            gradient_strength=gradient_strength,
         ),
         "qc": {
             "min_fg_fraction": float(min_fg_fraction),
@@ -599,9 +659,9 @@ if __name__ == "__main__":
     parser.add_argument("--mask-low-thr", type=float, default=0.13, help="Low threshold for visible mask creation")
     parser.add_argument("--mask-high-thr", type=float, default=0.27, help="High threshold for visible mask creation")
     parser.add_argument("--mask-min-size", type=int, default=10, help="Minimum connected component size in mask")
-    parser.add_argument("--seed-erode-iters", type=int, default=1, help="Light erosion applied only to seed support")
-    parser.add_argument("--mask-gamma", type=float, default=1.35, help="Gamma used to suppress fuzzy halos in clean image")
-    parser.add_argument("--max-hole-size", type=int, default=3, help="Fill only holes up to this size inside masks")
+    parser.add_argument("--seed-erode-iters", type=int, default=1, help="How much to erode the raw mask before seeding")
+    parser.add_argument("--mask-gamma", type=float, default=1.35, help="Gamma > 1 suppresses faint halos in mask extraction")
+    parser.add_argument("--max-hole-size", type=int, default=3, help="Fill only tiny holes up to this size")
     parser.add_argument("--seed", type=int, default=None, help="Random seed for reproducibility")
 
     # shared / imaging parameters
@@ -609,6 +669,11 @@ if __name__ == "__main__":
     parser.add_argument("--psf-sigma-z", type=float, default=2.0, help="PSF sigma in Z")
     parser.add_argument("--photon-level", type=float, default=2000.0, help="Photon count scaling")
     parser.add_argument("--read-noise-sigma", type=float, default=0.03, help="Gaussian read noise sigma")
+    parser.add_argument("--apply-gaussian-noise", action="store_true", help="Enable additional Gaussian noise")
+    parser.add_argument("--gaussian-std", type=float, default=12.0, help="Gaussian std in uint8 scale when Gaussian noise is enabled")
+    parser.add_argument("--background-strength", type=float, default=0.08, help="Low-frequency background texture strength")
+    parser.add_argument("--band-strength", type=float, default=0.025, help="Column / banding background strength")
+    parser.add_argument("--gradient-strength", type=float, default=0.03, help="Global gradient background strength")
 
     # model A params
     parser.add_argument("--n-tubes", type=int, default=5, help="(Model A) number of tubes")
@@ -669,6 +734,11 @@ if __name__ == "__main__":
         psf_sigma_z=args.psf_sigma_z,
         photon_level=args.photon_level,
         read_noise_sigma=args.read_noise_sigma,
+        apply_gaussian_noise=args.apply_gaussian_noise,
+        gaussian_std=args.gaussian_std,
+        background_strength=args.background_strength,
+        band_strength=args.band_strength,
+        gradient_strength=args.gradient_strength,
         projection=args.projection,
         slab_thickness=args.slab_thickness,
         mask_low_thr=args.mask_low_thr,

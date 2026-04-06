@@ -1,4 +1,5 @@
 import numpy as np
+from scipy.ndimage import gaussian_filter
 
 
 def add_poisson_noise(image, peak_photons=5000, seed=None):
@@ -38,6 +39,53 @@ def add_gaussian_noise(image, sigma=0.03, seed=None):
     return np.clip(noisy, 0.0, 1.0)
 
 
+def _make_structured_background(
+    shape,
+    rng,
+    background_strength=0.08,
+    band_strength=0.025,
+    gradient_strength=0.03,
+):
+    """
+    Create a weak, structured microscopy-like background.
+
+    Components:
+    - low-frequency cloudy background
+    - column-wise banding / striping
+    - weak global illumination gradient
+    """
+    h, w = shape
+
+    # low-frequency cloudy field
+    field = rng.normal(loc=0.0, scale=1.0, size=(h, w)).astype(np.float32)
+    field_sigma = float(rng.uniform(6.0, 14.0))
+    field = gaussian_filter(field, sigma=field_sigma)
+    field -= field.mean()
+    field /= max(field.std(), 1e-6)
+
+    # soft column-wise banding
+    cols = rng.normal(loc=0.0, scale=1.0, size=w).astype(np.float32)
+    cols = gaussian_filter(cols, sigma=max(3.0, w / 24.0))
+    cols -= cols.mean()
+    cols /= max(cols.std(), 1e-6)
+    band_img = np.tile(cols[None, :], (h, 1))
+
+    # weak gradient with random direction
+    yy, xx = np.mgrid[0:h, 0:w].astype(np.float32)
+    xx = (xx / max(w - 1, 1)) - 0.5
+    yy = (yy / max(h - 1, 1)) - 0.5
+    angle = float(rng.uniform(0.0, 2.0 * np.pi))
+    grad = np.cos(angle) * xx + np.sin(angle) * yy
+    grad /= max(np.abs(grad).max(), 1e-6)
+
+    bg = (
+        float(background_strength) * field
+        + float(band_strength) * band_img
+        + float(gradient_strength) * grad
+    )
+    return bg.astype(np.float32)
+
+
 def _supervisor_style_noise(
     image,
     rng,
@@ -51,10 +99,7 @@ def _supervisor_style_noise(
     Supervisor-style noise:
     1) random offset / max signal normalization
     2) Poisson noise
-    3) optional Gaussian noise (disabled by default)
-
-    By default returns float32 in [0,1] to avoid breaking the rest of the project.
-    Set return_uint8=True if you want the exact uint8-style behavior.
+    3) optional Gaussian noise
     """
     img = image.astype(np.float32)
 
@@ -73,7 +118,6 @@ def _supervisor_style_noise(
 
     img_noisy = rng.poisson(img_normalized).astype(np.float32)
 
-    # Supervisor said to keep this off by default
     if apply_gaussian:
         img_noisy = rng.normal(loc=img_noisy, scale=std, size=img_noisy.shape).astype(np.float32)
 
@@ -101,14 +145,9 @@ def add_microscopy_noise(
     - uses supervisor-style Poisson noise
     - Gaussian is OFF by default
     - returns float [0,1] by default
-
-    Notes:
-    - peak_photons and read_sigma are kept mainly for backward compatibility
-    - if apply_gaussian=True and std is left as default, read_sigma can still be used
     """
     rng = np.random.default_rng(seed)
 
-    # backward-compatible mapping if someone explicitly wants to use old sigma style
     if apply_gaussian and std == 15.0 and read_sigma is not None:
         if read_sigma <= 1.0:
             std = float(read_sigma) * 255.0
@@ -131,21 +170,22 @@ def add_noise(
     seed=None,
     apply_gaussian=False,
     std=15.0,
+    background_strength=0.08,
+    band_strength=0.025,
+    gradient_strength=0.03,
     return_uint8=False,
 ):
     """
     Helper matching the API used by demo_pipeline.
 
-    This now uses the supervisor's preferred behavior:
-    - random offset + random max signal normalization
-    - Poisson noise
-    - Gaussian OFF by default
+    This version keeps the supervisor-style Poisson noise but can also add a
+    structured background before noise, which helps make the background look
+    more like real microscopy.
 
     Compatibility behavior:
     - still returns float [0,1] by default
-    - keeps old parameters so existing calls do not break
+    - old calls still work
     - if photon_level is in [1,255], it is used as a fixed max signal
-    - if apply_gaussian=True, read_noise_sigma can still influence std
     """
     rng = np.random.default_rng(seed)
 
@@ -165,8 +205,21 @@ def add_noise(
         else:
             std = float(read_noise_sigma)
 
+    img = image.astype(np.float32).copy()
+
+    # Add structured background before Poisson / Gaussian noise.
+    if background_strength > 0 or band_strength > 0 or gradient_strength > 0:
+        bg = _make_structured_background(
+            img.shape,
+            rng,
+            background_strength=background_strength,
+            band_strength=band_strength,
+            gradient_strength=gradient_strength,
+        )
+        img = np.clip(img + bg, 0.0, None)
+
     return _supervisor_style_noise(
-        image=image,
+        image=img,
         rng=rng,
         apply_gaussian=apply_gaussian,
         std=std,

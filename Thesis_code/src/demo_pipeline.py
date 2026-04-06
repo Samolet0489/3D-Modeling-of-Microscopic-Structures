@@ -1,15 +1,4 @@
-"""Demo script for Phase 1 of the synthetic microscopy pipeline.
-
-This module can be executed either directly (when running inside the ``src``
-directory) or via ``python -m src.demo_pipeline`` from the project root.
-It creates a single synthetic sample and displays five panels:
-
-  * a 2-D slice / projected view from the 3-D volume
-  * the raw projected geometry mask
-  * the refined visible mask
-  * the clean (blurred) image
-  * the noisy image
-"""
+"""Demo script for Phase 1 of the synthetic microscopy pipeline."""
 
 import matplotlib.pyplot as plt
 
@@ -25,6 +14,11 @@ def main(
     psf_sigma_z=2.0,
     photon_level=2000.0,
     read_noise_sigma=0.03,
+    apply_gaussian_noise=True,
+    gaussian_std=12.0,
+    background_strength=0.08,
+    band_strength=0.025,
+    gradient_strength=0.03,
     projection="focus_max",
     slab_thickness=5,
     mask_low_thr=0.13,
@@ -45,7 +39,6 @@ def main(
     z_scale=0.35,
     seed_spread=20,
     seed=42,
-    noise_seed=123,
 ):
     vol, raw_mask, psf, clean, noisy, visible_mask = generate_single_example(
         shape=shape,
@@ -56,6 +49,11 @@ def main(
         psf_sigma_z=psf_sigma_z,
         photon_level=photon_level,
         read_noise_sigma=read_noise_sigma,
+        apply_gaussian_noise=apply_gaussian_noise,
+        gaussian_std=gaussian_std,
+        background_strength=background_strength,
+        band_strength=band_strength,
+        gradient_strength=gradient_strength,
         projection=projection,
         slab_thickness=slab_thickness,
         mask_low_thr=mask_low_thr,
@@ -78,29 +76,17 @@ def main(
         seed=seed,
     )
 
-    if projection == "center_slice":
-        z_mid = vol.shape[0] // 2
-        vol_slice = vol[z_mid]
-    else:
-        vol_slice = _mask_to_2d(vol > 0, projection, slab_thickness=slab_thickness)
-
     raw_mask_slice = _mask_to_2d(raw_mask, projection, slab_thickness=slab_thickness)
 
-    fig, axes = plt.subplots(1, 5, figsize=(15, 3))
-    axes[0].imshow(vol_slice, cmap="gray")
-    axes[0].set_title(f"Volume ({projection})")
-
-    axes[1].imshow(raw_mask_slice, cmap="gray")
-    axes[1].set_title("Raw mask")
-
-    axes[2].imshow(visible_mask, cmap="gray")
-    axes[2].set_title("Visible mask")
-
-    axes[3].imshow(clean, cmap="gray")
-    axes[3].set_title("Clean image")
-
-    axes[4].imshow(noisy, cmap="gray")
-    axes[4].set_title("Noisy image")
+    fig, axes = plt.subplots(1, 4, figsize=(12, 3))
+    axes[0].imshow(raw_mask_slice, cmap="gray")
+    axes[0].set_title("Raw mask")
+    axes[1].imshow(visible_mask, cmap="gray")
+    axes[1].set_title("Visible mask")
+    axes[2].imshow(clean, cmap="gray")
+    axes[2].set_title("Clean image")
+    axes[3].imshow(noisy, cmap="gray")
+    axes[3].set_title("Noisy image")
 
     for ax in axes:
         ax.axis("off")
@@ -113,22 +99,21 @@ if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser(description="Run demo pipeline and show example outputs.")
-    parser.add_argument(
-        "--model", choices=["A", "B"], default="A",
-        help="Model A (baseline tubes) or Model B (random-walk polylines)"
-    )
-    parser.add_argument(
-        "--projection", choices=["center_slice", "max", "sum", "focus_max"], default="focus_max",
-        help="Projection method for 3D→2D conversion"
-    )
-    parser.add_argument("--slab-thickness", type=int, default=5, help="Z slab thickness for focus_max projection")
-    parser.add_argument("--mask-low-thr", type=float, default=0.13, help="Low threshold for visible mask creation")
-    parser.add_argument("--mask-high-thr", type=float, default=0.27, help="High threshold for visible mask creation")
-    parser.add_argument("--mask-min-size", type=int, default=10, help="Minimum connected component size in mask")
-    parser.add_argument("--seed-erode-iters", type=int, default=1, help="Light erosion applied only to seed support")
-    parser.add_argument("--mask-gamma", type=float, default=1.35, help="Gamma used to suppress fuzzy halos in clean image")
-    parser.add_argument("--max-hole-size", type=int, default=3, help="Fill only holes up to this size inside masks")
-    parser.add_argument("--seed", type=int, default=42, help="Seed for reproducibility")
+    parser.add_argument("--model", choices=["A", "B"], default="A")
+    parser.add_argument("--projection", choices=["center_slice", "max", "sum", "focus_max"], default="focus_max")
+    parser.add_argument("--slab-thickness", type=int, default=5)
+    parser.add_argument("--mask-low-thr", type=float, default=0.13)
+    parser.add_argument("--mask-high-thr", type=float, default=0.27)
+    parser.add_argument("--mask-min-size", type=int, default=10)
+    parser.add_argument("--seed-erode-iters", type=int, default=1)
+    parser.add_argument("--mask-gamma", type=float, default=1.35)
+    parser.add_argument("--max-hole-size", type=int, default=3)
+    parser.add_argument("--apply-gaussian-noise", action="store_true")
+    parser.add_argument("--gaussian-std", type=float, default=12.0)
+    parser.add_argument("--background-strength", type=float, default=0.08)
+    parser.add_argument("--band-strength", type=float, default=0.025)
+    parser.add_argument("--gradient-strength", type=float, default=0.03)
+    parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
 
     main(
@@ -140,6 +125,11 @@ if __name__ == "__main__":
         seed_erode_iters=args.seed_erode_iters,
         mask_gamma=args.mask_gamma,
         max_hole_size=args.max_hole_size,
+        apply_gaussian_noise=args.apply_gaussian_noise,
+        gaussian_std=args.gaussian_std,
+        background_strength=args.background_strength,
+        band_strength=args.band_strength,
+        gradient_strength=args.gradient_strength,
         model=args.model,
         seed=args.seed,
     )
