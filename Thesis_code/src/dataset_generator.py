@@ -11,6 +11,7 @@ import argparse
 
 import numpy as np
 from imageio import imwrite
+from scipy.ndimage import binary_propagation, label
 
 from .shapes import generate_mito_volume, generate_mito_volume_polyline
 from .psf import gaussian_psf_kernel
@@ -18,14 +19,25 @@ from .render import render_image
 from .noise import add_noise
 
 
-def _mask_to_2d(mask, projection):
+def _mask_to_2d(mask, projection, slab_thickness=7):
     if projection == "center_slice":
         z_mid = mask.shape[0] // 2
         return mask[z_mid]
+
     if projection == "max":
         return mask.max(axis=0)
+
     if projection == "sum":
         return mask.sum(axis=0) > 0
+
+    if projection == "focus_max":
+        slab_thickness = max(1, int(slab_thickness))
+        z_mid = mask.shape[0] // 2
+        half = slab_thickness // 2
+        z0 = max(0, z_mid - half)
+        z1 = min(mask.shape[0], z_mid + half + 1)
+        return mask[z0:z1].max(axis=0)
+
     raise ValueError(f"Unknown projection: {projection}")
 
 
@@ -125,6 +137,46 @@ def _make_border_mask(shape_2d, border_width=2):
     return border
 
 
+def _remove_small_components(mask2d, min_size=12):
+    labels, n = label(mask2d.astype(np.uint8))
+    if n == 0:
+        return mask2d.astype(bool)
+
+    counts = np.bincount(labels.ravel())
+    keep = counts >= int(min_size)
+    keep[0] = False
+    return keep[labels]
+
+
+def _visible_mask_from_clean(clean, raw_mask2d, low_thr=0.12, high_thr=0.24, min_size=12):
+    """
+    Build a visible 2D mask from the clean projected image, but constrain it
+    to the raw projected geometry.
+
+    This is intentionally moderate:
+    - no aggressive erosion
+    - no aggressive morphology
+    - strong/weak thresholding only inside raw support
+    """
+    img = clean.astype(np.float32)
+    img = img - img.min()
+    if img.max() > 0:
+        img = img / img.max()
+
+    raw = raw_mask2d.astype(bool)
+
+    strong = (img >= float(high_thr)) & raw
+    weak = (img >= float(low_thr)) & raw
+
+    if strong.sum() == 0:
+        mask = weak
+    else:
+        mask = binary_propagation(strong, mask=weak)
+
+    mask = _remove_small_components(mask, min_size=min_size)
+    return mask.astype(bool)
+
+
 def _evaluate_mask_qc(
     mask2d,
     min_fg_fraction=0.01,
@@ -184,7 +236,11 @@ def generate_single_example(
     psf_sigma_z=2.0,
     photon_level=2000.0,
     read_noise_sigma=0.03,
-    projection="center_slice",
+    projection="focus_max",
+    slab_thickness=7,
+    mask_low_thr=0.12,
+    mask_high_thr=0.24,
+    mask_min_size=12,
     model="A",
     n_seeds=4,
     step_length=1.0,
@@ -225,11 +281,20 @@ def generate_single_example(
         raise ValueError(f"Unknown model: {model}. Must be 'A' or 'B'.")
 
     psf = gaussian_psf_kernel(size=psf_size, sigma_xy=psf_sigma_xy, sigma_z=psf_sigma_z)
-    clean = render_image(volume, psf, projection=projection)
+    clean = render_image(volume, psf, projection=projection, slab_thickness=slab_thickness)
 
     clean = clean - clean.min()
     if clean.max() > 0:
         clean = clean / clean.max()
+
+    raw_mask2d = _mask_to_2d(mask, projection, slab_thickness=slab_thickness)
+    mask2d = _visible_mask_from_clean(
+        clean,
+        raw_mask2d,
+        low_thr=mask_low_thr,
+        high_thr=mask_high_thr,
+        min_size=mask_min_size,
+    )
 
     noisy = add_noise(
         clean,
@@ -237,7 +302,7 @@ def generate_single_example(
         read_noise_sigma=read_noise_sigma,
         seed=seed,
     )
-    return volume, mask, psf, clean, noisy
+    return volume, mask, psf, clean, noisy, mask2d
 
 
 def generate_and_save_dataset(
@@ -249,7 +314,11 @@ def generate_and_save_dataset(
     psf_sigma_z=2.0,
     photon_level=2000.0,
     read_noise_sigma=0.03,
-    projection="center_slice",
+    projection="focus_max",
+    slab_thickness=7,
+    mask_low_thr=0.12,
+    mask_high_thr=0.24,
+    mask_min_size=12,
     model="A",
     n_tubes=5,
     tube_radius=2,
@@ -276,12 +345,6 @@ def generate_and_save_dataset(
 
     Images are stored as PNG files under out_dir/images and masks under out_dir/masks.
     File names are zero-padded like 000000.png.
-
-    Important behavior:
-    - By default, the parameters passed to this function are respected exactly.
-    - If randomize_per_sample=True, structure and imaging parameters are randomized
-      per sample and recorded in sample_manifest.jsonl.
-    - A QC gate rejects samples that are too empty, too full, or too border-heavy.
     """
     images_dir = os.path.join(out_dir, "images")
     masks_dir = os.path.join(out_dir, "masks")
@@ -299,6 +362,10 @@ def generate_and_save_dataset(
         "shape": list(shape),
         "psf_size": list(psf_size),
         "projection": projection,
+        "slab_thickness": int(slab_thickness),
+        "mask_low_thr": float(mask_low_thr),
+        "mask_high_thr": float(mask_high_thr),
+        "mask_min_size": int(mask_min_size),
         "model": model,
         "randomize_per_sample": bool(randomize_per_sample),
         "seed": seed,
@@ -364,17 +431,19 @@ def generate_and_save_dataset(
                 volume_params = dict(fixed_volume_params)
                 imaging_params = dict(fixed_imaging_params)
 
-            vol, mask, psf, clean, noisy = generate_single_example(
+            vol, mask, psf, clean, noisy, mask2d = generate_single_example(
                 shape=shape,
                 psf_size=psf_size,
                 projection=projection,
+                slab_thickness=slab_thickness,
+                mask_low_thr=mask_low_thr,
+                mask_high_thr=mask_high_thr,
+                mask_min_size=mask_min_size,
                 model=model,
                 seed=sample_seed,
                 **volume_params,
                 **imaging_params,
             )
-
-            mask2d = _mask_to_2d(mask, projection)
 
             qc = _evaluate_mask_qc(
                 mask2d=mask2d,
@@ -425,6 +494,10 @@ def generate_and_save_dataset(
             "seed": last_seed,
             "model": model,
             "projection": projection,
+            "slab_thickness": int(slab_thickness),
+            "mask_low_thr": float(mask_low_thr),
+            "mask_high_thr": float(mask_high_thr),
+            "mask_min_size": int(mask_min_size),
             "image_file": os.path.relpath(img_path, out_dir),
             "mask_file": os.path.relpath(mask_path, out_dir),
             "volume_params": last_volume_params,
@@ -450,10 +523,14 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--projection",
-        choices=["center_slice", "max", "sum"],
-        default="center_slice",
+        choices=["center_slice", "max", "sum", "focus_max"],
+        default="focus_max",
         help="Projection method for 3D→2D conversion",
     )
+    parser.add_argument("--slab-thickness", type=int, default=7, help="Z slab thickness for focus_max projection")
+    parser.add_argument("--mask-low-thr", type=float, default=0.12, help="Low threshold for visible mask creation")
+    parser.add_argument("--mask-high-thr", type=float, default=0.24, help="High threshold for visible mask creation")
+    parser.add_argument("--mask-min-size", type=int, default=12, help="Minimum connected component size in mask")
     parser.add_argument("--seed", type=int, default=None, help="Random seed for reproducibility")
 
     # shared / imaging parameters
@@ -522,6 +599,10 @@ if __name__ == "__main__":
         photon_level=args.photon_level,
         read_noise_sigma=args.read_noise_sigma,
         projection=args.projection,
+        slab_thickness=args.slab_thickness,
+        mask_low_thr=args.mask_low_thr,
+        mask_high_thr=args.mask_high_thr,
+        mask_min_size=args.mask_min_size,
         model=args.model,
         n_tubes=args.n_tubes,
         tube_radius=args.tube_radius,
