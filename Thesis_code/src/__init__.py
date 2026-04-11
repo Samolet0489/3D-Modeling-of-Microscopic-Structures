@@ -2,12 +2,12 @@
 
 The modules exposed here are:
 
-* ``shapes`` – volume and mask creation
-* ``psf`` – point-spread function utilities
-* ``render`` – rendering and projection routines
-* ``noise`` – noise models
-* ``dataset_generator`` – dataset building and CLI
-* ``demo_pipeline`` – small demonstration script
+* ``shapes`` -volume and mask creation
+* ``psf`` - point-spread function utilities
+* ``render`` - rendering and projection routines
+* ``noise`` - noise models
+* ``dataset_generator`` - dataset building and CLI
+* ``demo_pipeline`` - small demonstration script
 """
 
 # expose frequently used symbols for convenience
