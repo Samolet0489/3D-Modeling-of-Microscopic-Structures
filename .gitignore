@@ -11,6 +11,8 @@ __pycache__/
 /Thesis_code/test_data
 /Thesis_code/runs
 /Thesis_code/results
+/Thesis_code/experiments/cross_domain_data
+/Thesis_code/experiments/cross_domain_manifest.json
 
 # --- Virtual environments ---
 .venv/
