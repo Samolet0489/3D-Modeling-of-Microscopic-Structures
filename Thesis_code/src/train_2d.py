@@ -543,8 +543,22 @@ def main():
     optimizer = optim.Adam(model.parameters(), lr=args.lr)
     
     # Mixed precision scaler (for CUDA only and if requested)
-    scaler = GradScaler(device_type="cuda") if (device.type == "cuda" and args.amp) else None
     use_amp = (device.type == "cuda" and args.amp)
+
+    if use_amp:
+        try:
+            # newer API style
+            scaler = GradScaler("cuda")
+        except TypeError:
+            try:
+                # older API style
+                scaler = GradScaler()
+            except TypeError:
+                scaler = None
+                use_amp = False
+                print("Warning: AMP GradScaler not supported in this PyTorch version. Falling back to full precision.")
+    else:
+        scaler = None
 
 
     # # Mixed precision scaler (for CUDA only and if requested)  - REWORKED VERSION
